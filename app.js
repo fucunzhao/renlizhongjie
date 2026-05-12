@@ -7,9 +7,14 @@ let data = {
   chat: []
 };
 let fuzzyItems = [];
+let fuzzyKind = "demand";
+let account = JSON.parse(localStorage.getItem("labor-account") || "null");
 
 const els = {
   pageTitle: document.querySelector("#pageTitle"),
+  accountBadge: document.querySelector("#accountBadge"),
+  accountStatus: document.querySelector("#accountStatus"),
+  accountMessage: document.querySelector("#accountMessage"),
   sideSummary: document.querySelector("#sideSummary"),
   metrics: document.querySelector("#metrics"),
   fuzzyText: document.querySelector("#fuzzyText"),
@@ -39,7 +44,7 @@ const els = {
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(account?.token ? { Authorization: `Bearer ${account.token}` } : {}) },
     ...options
   });
   const contentType = response.headers.get("Content-Type") || "";
@@ -50,7 +55,12 @@ async function api(path, options = {}) {
 
 async function loadData() {
   const payload = await api("/api/data");
+  if (payload.account) {
+    account = payload.account;
+    localStorage.setItem("labor-account", JSON.stringify(account));
+  }
   data = payload;
+  renderAccount();
   renderAll();
 }
 
@@ -90,12 +100,25 @@ function renderAll() {
 
 renderFuzzyResults();
 
+function renderAccount() {
+  const label = account ? `${account.type === "enterprise" ? "企业" : "业务"}：${account.company || account.name}` : "未登录";
+  els.accountBadge.textContent = label;
+  els.accountStatus.textContent = account ? `当前登录：${label}` : "当前未登录";
+}
+
 function renderFuzzyResults() {
   els.fuzzyCount.textContent = fuzzyItems.length ? `已识别 ${fuzzyItems.length} 条，导入前可修改` : "暂无识别结果";
   els.fuzzyResults.innerHTML = fuzzyItems.map((item, index) => `
     <article class="item fuzzy-card" data-fuzzy-index="${index}">
       <div class="item-top"><strong>识别结果 ${index + 1}</strong>${tag(`可信度 ${item.confidence || 70}%`)}</div>
-      <div class="form-grid">
+      ${fuzzyKind === "worker" ? workerFuzzyFields(item) : demandFuzzyFields(item)}
+    </article>
+  `).join("") || `<p class="item-meta">粘贴文字或上传文本后，点击自动识别。</p>`;
+}
+
+function demandFuzzyFields(item) {
+  return `
+    <div class="form-grid">
         <label>企业<input data-field="company" value="${escapeAttr(item.company)}"></label>
         <label>岗位<input data-field="role" value="${escapeAttr(item.role)}"></label>
         <label>类型<select data-field="type">${["长期工", "短期工", "日结工", "季节工"].map(type => `<option ${item.type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label>
@@ -107,8 +130,25 @@ function renderFuzzyResults() {
         <label>薪资<input data-field="salary" value="${escapeAttr(item.salary)}"></label>
       </div>
       <label>原文/备注<textarea data-field="notes">${escapeHtml(item.notes || "")}</textarea></label>
-    </article>
-  `).join("") || `<p class="item-meta">粘贴文字或上传文本后，点击自动识别。</p>`;
+  `;
+}
+
+function workerFuzzyFields(item) {
+  return `
+    <div class="form-grid">
+      <label>姓名<input data-field="name" value="${escapeAttr(item.name)}"></label>
+      <label>手机号<input data-field="phone" value="${escapeAttr(item.phone)}"></label>
+      <label>性别<select data-field="gender"><option value="">未确认</option><option ${item.gender === "男" ? "selected" : ""}>男</option><option ${item.gender === "女" ? "selected" : ""}>女</option></select></label>
+      <label>年龄<input data-field="age" value="${escapeAttr(item.age)}"></label>
+      <label>地区<input data-field="location" value="${escapeAttr(item.location)}"></label>
+      <label>可到岗<input data-field="available" value="${escapeAttr(item.available)}"></label>
+      <label>周期<input data-field="period" value="${escapeAttr(item.period)}"></label>
+      <label>期望岗位<input data-field="expectedRole" value="${escapeAttr(item.expectedRole)}"></label>
+      <label>期望薪资<input data-field="salary" value="${escapeAttr(item.salary)}"></label>
+    </div>
+    <label>标签<textarea data-field="tags">${escapeHtml((item.tags || []).join(", "))}</textarea></label>
+    <label>原文/备注<textarea data-field="note">${escapeHtml(item.note || "")}</textarea></label>
+  `;
 }
 
 function setFuzzyStatus(message, isError = false) {
@@ -396,8 +436,14 @@ function collectFuzzyItemsFromDom() {
     card.querySelectorAll("[data-field]").forEach(field => {
       item[field.dataset.field] = field.value.trim();
     });
-    item.headcount = Number(item.headcount || 20);
-    item.signed = 0;
+    if (fuzzyKind === "worker") {
+      item.score = 75;
+      item.tags = (item.tags || "").split(/[,，]/).map(tag => tag.trim()).filter(Boolean);
+      item.source = "求职者模糊采集";
+    } else {
+      item.headcount = Number(item.headcount || 20);
+      item.signed = 0;
+    }
     return item;
   });
 }
@@ -502,7 +548,7 @@ document.querySelector("#parseFuzzy").addEventListener("click", async () => {
   try {
     const payload = await api("/api/fuzzy/parse", {
       method: "POST",
-      body: JSON.stringify({ text })
+    body: JSON.stringify({ text, kind: fuzzyKind })
     });
     fuzzyItems = payload.items || [];
     renderFuzzyResults();
@@ -527,7 +573,7 @@ document.querySelector("#importFuzzy").addEventListener("click", async () => {
   try {
     const payload = await api("/api/fuzzy/import", {
       method: "POST",
-      body: JSON.stringify({ items })
+    body: JSON.stringify({ items, kind: fuzzyKind })
     });
     data = payload.data;
     fuzzyItems = [];
@@ -555,6 +601,69 @@ els.fuzzyFile.addEventListener("change", async event => {
   const file = event.target.files?.[0];
   if (!file) return;
   els.fuzzyText.value = await file.text();
+});
+
+document.querySelectorAll("[data-fuzzy-kind]").forEach(button => {
+  button.addEventListener("click", () => {
+    fuzzyKind = button.dataset.fuzzyKind;
+    document.querySelectorAll("[data-fuzzy-kind]").forEach(item => item.classList.remove("active"));
+    button.classList.add("active");
+    fuzzyItems = [];
+    renderFuzzyResults();
+    setFuzzyStatus(fuzzyKind === "worker" ? "已切换到求职者信息采集。" : "已切换到企业用工信息采集。");
+  });
+});
+
+function showAccountMessage(message, isError = false) {
+  els.accountMessage.textContent = message;
+  els.accountMessage.style.background = isError ? "#ffe9e9" : "#e5f5ec";
+  els.accountMessage.style.color = isError ? "#8a2424" : "#0d5b38";
+  els.accountMessage.classList.add("show");
+}
+
+document.querySelector("#registerForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const formData = new FormData(event.currentTarget);
+    const payload = await api("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(formData.entries()))
+    });
+    account = payload.account;
+    localStorage.setItem("labor-account", JSON.stringify(account));
+    data = payload.data;
+    renderAccount();
+    renderAll();
+    showAccountMessage("注册并登录成功。");
+  } catch (error) {
+    showAccountMessage(error.message, true);
+  }
+});
+
+document.querySelector("#loginForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const formData = new FormData(event.currentTarget);
+    const payload = await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(formData.entries()))
+    });
+    account = payload.account;
+    localStorage.setItem("labor-account", JSON.stringify(account));
+    data = payload.data;
+    renderAccount();
+    renderAll();
+    showAccountMessage("登录成功。");
+  } catch (error) {
+    showAccountMessage(error.message, true);
+  }
+});
+
+document.querySelector("#logoutAccount").addEventListener("click", async () => {
+  account = null;
+  localStorage.removeItem("labor-account");
+  showAccountMessage("已退出登录。");
+  await loadData();
 });
 
 els.chatForm.addEventListener("submit", async event => {

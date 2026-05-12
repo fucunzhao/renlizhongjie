@@ -492,6 +492,25 @@ tr:last-child td {
   gap: 14px;
 }
 
+.collector-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.collector-tab {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 14px;
+}
+
+.collector-tab.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
 .collector-form label {
   display: grid;
   gap: 8px;
