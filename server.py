@@ -224,6 +224,80 @@ WORKERS = [
     },
 ]
 
+PUBLIC_DEMO_DEMANDS = [
+    {
+        "id": -1,
+        "accountId": 0,
+        "companyKey": "demo",
+        "company": "示例电子厂",
+        "role": "包装普工",
+        "type": "短期工",
+        "location": "示例园区A",
+        "start": "2026-06-01",
+        "end": "2026-06-30",
+        "headcount": 30,
+        "signed": 12,
+        "salary": "18元/小时",
+        "age": "18-45岁",
+        "notes": "模拟数据：包工作餐，提供住宿，两班倒，可接受无经验。",
+    },
+    {
+        "id": -2,
+        "accountId": 0,
+        "companyKey": "demo",
+        "company": "示例物流中心",
+        "role": "分拣员",
+        "type": "长期工",
+        "location": "示例园区B",
+        "start": "2026-07-01",
+        "end": "",
+        "headcount": 20,
+        "signed": 8,
+        "salary": "5500-6500元/月",
+        "age": "18-50岁",
+        "notes": "模拟数据：包吃住，接受夜班，主要负责分拣、扫码、打包。",
+    },
+]
+
+PUBLIC_DEMO_WORKERS = [
+    {
+        "id": -1,
+        "accountId": 0,
+        "companyKey": "demo",
+        "name": "示例求职者A",
+        "phone": "13800000000",
+        "gender": "男",
+        "age": "28",
+        "location": "示例园区A",
+        "available": "现在可到岗",
+        "period": "长期稳定",
+        "expectedRole": "普工",
+        "salary": "5000以上",
+        "score": 80,
+        "note": "模拟数据，不代表真实求职者。",
+        "source": "系统演示",
+        "tags": ["接受夜班", "需要住宿", "普工"],
+    },
+    {
+        "id": -2,
+        "accountId": 0,
+        "companyKey": "demo",
+        "name": "示例求职者B",
+        "phone": "13900000000",
+        "gender": "女",
+        "age": "24",
+        "location": "示例园区B",
+        "available": "下周可到岗",
+        "period": "1-3个月",
+        "expectedRole": "质检",
+        "salary": "周结优先",
+        "score": 78,
+        "note": "模拟数据，不代表真实求职者。",
+        "source": "系统演示",
+        "tags": ["坐班", "质检", "短期工"],
+    },
+]
+
 
 def connect():
     conn = sqlite3.connect(DB_PATH)
@@ -664,6 +738,57 @@ def build_insights(demands, workers):
     }
 
 
+def public_demo_payload():
+    knowledge = [
+        {
+            "id": -1,
+            "accountId": 0,
+            "companyKey": "demo",
+            "category": "演示岗位规则",
+            "title": "示例电子厂｜包装普工",
+            "summary": "这是一条未登录状态下展示的模拟知识条目，用于演示岗位规则、薪资、食宿和用工周期如何沉淀。",
+            "source": "系统演示",
+            "entityType": "demo",
+            "entityId": -1,
+            "tags": ["模拟数据", "岗位规则", "短期工"],
+            "confidence": 80,
+            "isDeleted": 0,
+            "createdAt": "",
+            "updatedAt": "",
+        },
+        {
+            "id": -2,
+            "accountId": 0,
+            "companyKey": "demo",
+            "category": "演示求职者画像",
+            "title": "示例求职者A｜普工｜可到岗",
+            "summary": "这是一条未登录状态下展示的模拟求职者画像，用于演示标签、到岗时间和岗位偏好如何参与匹配。",
+            "source": "系统演示",
+            "entityType": "demo",
+            "entityId": -2,
+            "tags": ["模拟数据", "求职者画像"],
+            "confidence": 75,
+            "isDeleted": 0,
+            "createdAt": "",
+            "updatedAt": "",
+        },
+    ]
+    return {
+        "account": None,
+        "demo": True,
+        "demands": PUBLIC_DEMO_DEMANDS,
+        "workers": PUBLIC_DEMO_WORKERS,
+        "chat": [
+            {
+                "role": "assistant",
+                "text": "当前为未登录演示模式，页面展示的是模拟数据。登录后会加载企业专属私有知识库。",
+            }
+        ],
+        "knowledge": knowledge,
+        "insights": build_insights(PUBLIC_DEMO_DEMANDS, PUBLIC_DEMO_WORKERS),
+    }
+
+
 def hash_password(password):
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
@@ -989,6 +1114,8 @@ def insert_worker(conn, body, account=None):
 
 
 def get_payload(account=None):
+    if not account:
+        return public_demo_payload()
     with connect() as conn:
         sync_knowledge_entries(conn)
         demand_where = scoped_where(account)

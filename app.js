@@ -179,6 +179,10 @@ function setFuzzyStatus(message, isError = false) {
 }
 
 function renderSidebar() {
+  if (!account) {
+    els.sideSummary.textContent = "当前为演示模式，展示的是模拟数据；登录后加载企业私有知识库和真实业务数据。";
+    return;
+  }
   if (!data.demands.length) {
     els.sideSummary.textContent = "暂无企业用工数据。";
     return;
