@@ -39,6 +39,11 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: .65;
+}
+
 .sidebar {
   min-height: 100vh;
   padding: 24px;

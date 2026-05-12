@@ -78,9 +78,10 @@
               <textarea id="fuzzyText" placeholder="把企业招聘简章、微信群消息、岗位说明整段粘贴到这里"></textarea>
             </label>
             <div class="public-actions">
-              <button class="ghost" id="clearFuzzy">清空</button>
-              <button class="primary" id="parseFuzzy">自动识别</button>
+              <button type="button" class="ghost" id="clearFuzzy">清空</button>
+              <button type="button" class="primary" id="parseFuzzy">自动识别</button>
             </div>
+            <div class="success-box" id="fuzzyStatus"></div>
           </div>
         </section>
         <section class="panel">
@@ -105,7 +106,7 @@
         </div>
         <div id="fuzzyResults" class="list"></div>
         <div class="public-actions">
-          <button class="primary" id="importFuzzy">确认导入企业需求</button>
+          <button type="button" class="primary" id="importFuzzy">确认导入企业需求</button>
         </div>
       </section>
     </section>

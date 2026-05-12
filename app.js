@@ -16,6 +16,7 @@ const els = {
   fuzzyFile: document.querySelector("#fuzzyFile"),
   fuzzyResults: document.querySelector("#fuzzyResults"),
   fuzzyCount: document.querySelector("#fuzzyCount"),
+  fuzzyStatus: document.querySelector("#fuzzyStatus"),
   urgentList: document.querySelector("#urgentList"),
   taskList: document.querySelector("#taskList"),
   yearSelect: document.querySelector("#yearSelect"),
@@ -41,7 +42,8 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json" },
     ...options
   });
-  const payload = await response.json();
+  const contentType = response.headers.get("Content-Type") || "";
+  const payload = contentType.includes("application/json") ? await response.json() : { error: await response.text() };
   if (!response.ok) throw new Error(payload.error || "请求失败");
   return payload;
 }
@@ -107,6 +109,13 @@ function renderFuzzyResults() {
       <label>原文/备注<textarea data-field="notes">${escapeHtml(item.notes || "")}</textarea></label>
     </article>
   `).join("") || `<p class="item-meta">粘贴文字或上传文本后，点击自动识别。</p>`;
+}
+
+function setFuzzyStatus(message, isError = false) {
+  els.fuzzyStatus.textContent = message;
+  els.fuzzyStatus.style.background = isError ? "#ffe9e9" : "#e5f5ec";
+  els.fuzzyStatus.style.color = isError ? "#8a2424" : "#0d5b38";
+  els.fuzzyStatus.classList.add("show");
 }
 
 function renderSidebar() {
@@ -481,26 +490,57 @@ els.workerSearch.addEventListener("input", renderWorkers);
 els.knowledgeSearch.addEventListener("input", renderKnowledgeBase);
 
 document.querySelector("#parseFuzzy").addEventListener("click", async () => {
-  const payload = await api("/api/fuzzy/parse", {
-    method: "POST",
-    body: JSON.stringify({ text: els.fuzzyText.value })
-  });
-  fuzzyItems = payload.items;
-  renderFuzzyResults();
+  const text = els.fuzzyText.value.trim();
+  if (!text) {
+    setFuzzyStatus("请先粘贴招聘文字，或上传文本文件后再识别。", true);
+    return;
+  }
+  const button = document.querySelector("#parseFuzzy");
+  button.disabled = true;
+  button.textContent = "识别中...";
+  setFuzzyStatus("正在识别，请稍等。");
+  try {
+    const payload = await api("/api/fuzzy/parse", {
+      method: "POST",
+      body: JSON.stringify({ text })
+    });
+    fuzzyItems = payload.items || [];
+    renderFuzzyResults();
+    setFuzzyStatus(fuzzyItems.length ? `识别完成，共 ${fuzzyItems.length} 条，请检查后导入。` : "没有识别到可导入的企业需求。", !fuzzyItems.length);
+  } catch (error) {
+    setFuzzyStatus(`识别失败：${error.message}。如果刚更新过代码，请确认服务器已经 git pull 并重启。`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "自动识别";
+  }
 });
 
 document.querySelector("#importFuzzy").addEventListener("click", async () => {
   const items = collectFuzzyItemsFromDom();
-  if (!items.length) return;
-  const payload = await api("/api/fuzzy/import", {
-    method: "POST",
-    body: JSON.stringify({ items })
-  });
-  data = payload.data;
-  fuzzyItems = [];
-  els.fuzzyText.value = "";
-  renderFuzzyResults();
-  renderAll();
+  if (!items.length) {
+    setFuzzyStatus("暂无可导入内容，请先自动识别。", true);
+    return;
+  }
+  const button = document.querySelector("#importFuzzy");
+  button.disabled = true;
+  button.textContent = "导入中...";
+  try {
+    const payload = await api("/api/fuzzy/import", {
+      method: "POST",
+      body: JSON.stringify({ items })
+    });
+    data = payload.data;
+    fuzzyItems = [];
+    els.fuzzyText.value = "";
+    renderFuzzyResults();
+    renderAll();
+    setFuzzyStatus("已导入企业需求，并同步进入全年日历和私有知识库。");
+  } catch (error) {
+    setFuzzyStatus(`导入失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "确认导入企业需求";
+  }
 });
 
 document.querySelector("#clearFuzzy").addEventListener("click", () => {
@@ -508,6 +548,7 @@ document.querySelector("#clearFuzzy").addEventListener("click", () => {
   els.fuzzyText.value = "";
   els.fuzzyFile.value = "";
   renderFuzzyResults();
+  setFuzzyStatus("已清空。");
 });
 
 els.fuzzyFile.addEventListener("change", async event => {
