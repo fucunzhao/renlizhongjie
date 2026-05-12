@@ -35,6 +35,8 @@ const els = {
   knowledgeSearch: document.querySelector("#knowledgeSearch"),
   knowledgeMetrics: document.querySelector("#knowledgeMetrics"),
   knowledgeList: document.querySelector("#knowledgeList"),
+  knowledgeForm: document.querySelector("#knowledgeForm"),
+  knowledgeBatchForm: document.querySelector("#knowledgeBatchForm"),
   insightList: document.querySelector("#insightList"),
   knowledgeSummary: document.querySelector("#knowledgeSummary"),
   chatLog: document.querySelector("#chatLog"),
@@ -341,12 +343,20 @@ function renderKnowledgeBase() {
 
   els.knowledgeList.innerHTML = filtered.map(item => `
     <article class="item">
-      <div class="item-top"><strong>${item.title}</strong>${tag(item.category)}</div>
+      <div class="item-top">
+        <label class="check-row"><input type="checkbox" class="knowledge-check" value="${item.id}"> <strong>${item.title}</strong></label>
+        ${tag(item.category)}
+      </div>
       <p>${item.summary}</p>
       <div class="tags">${item.tags.slice(0, 8).map(tagName => tag(tagName)).join("")}</div>
-      <div class="item-meta"><span>来源：${item.source || "系统沉淀"}</span><span>可信度：${item.confidence}%</span></div>
+      <div class="item-meta"><span>来源：${item.source || "系统沉淀"}</span><span>可信度：${item.confidence}%</span><span>${item.entityType || "manual"}</span></div>
+      <div class="public-actions">
+        <button class="ghost knowledge-edit" data-id="${item.id}" data-write>修改</button>
+        <button class="ghost knowledge-delete" data-id="${item.id}" data-write>删除</button>
+      </div>
     </article>
   `).join("") || `<p class="item-meta">暂无匹配的知识条目</p>`;
+  renderAccount();
 
   const block = (title, items, emptyText) => `
     <div class="knowledge-block">
@@ -464,6 +474,35 @@ function collectFuzzyItemsFromDom() {
     }
     return item;
   });
+}
+
+function selectedKnowledgeIds() {
+  return [...document.querySelectorAll(".knowledge-check:checked")].map(item => Number(item.value));
+}
+
+function openKnowledgeModal(item = null) {
+  els.knowledgeForm.reset();
+  els.knowledgeForm.elements.id.value = item?.id || "";
+  els.knowledgeForm.elements.category.value = item?.category || "业务知识";
+  els.knowledgeForm.elements.source.value = item?.source || "人工维护";
+  els.knowledgeForm.elements.confidence.value = item?.confidence || 80;
+  els.knowledgeForm.elements.tags.value = item?.tags?.join(", ") || "";
+  els.knowledgeForm.elements.title.value = item?.title || "";
+  els.knowledgeForm.elements.summary.value = item?.summary || "";
+  document.querySelector("#knowledgeModal").showModal();
+}
+
+function knowledgePayloadFromForm(form) {
+  const formData = new FormData(form);
+  return {
+    id: formData.get("id"),
+    category: formData.get("category"),
+    source: formData.get("source"),
+    confidence: formData.get("confidence"),
+    tags: formData.get("tags"),
+    title: formData.get("title"),
+    summary: formData.get("summary")
+  };
 }
 
 function formDataToDemand(formData) {
@@ -729,6 +768,65 @@ document.querySelector("#resetDemo").addEventListener("click", async () => {
 document.querySelector("#rebuildKnowledge").addEventListener("click", async () => {
   const payload = await api("/api/knowledge/rebuild", { method: "POST", body: "{}" });
   data = payload.data;
+  renderAll();
+});
+
+document.querySelector("#newKnowledge").addEventListener("click", () => openKnowledgeModal());
+
+els.knowledgeList.addEventListener("click", async event => {
+  const editButton = event.target.closest(".knowledge-edit");
+  const deleteButton = event.target.closest(".knowledge-delete");
+  if (editButton) {
+    const item = (data.knowledge || []).find(entry => entry.id === Number(editButton.dataset.id));
+    openKnowledgeModal(item);
+  }
+  if (deleteButton) {
+    const payload = await api("/api/knowledge/delete", {
+      method: "POST",
+      body: JSON.stringify({ id: Number(deleteButton.dataset.id) })
+    });
+    data = payload.data;
+    renderAll();
+  }
+});
+
+els.knowledgeForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const payload = await api("/api/knowledge/save", {
+    method: "POST",
+    body: JSON.stringify(knowledgePayloadFromForm(event.currentTarget))
+  });
+  data = payload.data;
+  document.querySelector("#knowledgeModal").close();
+  renderAll();
+});
+
+document.querySelector("#batchDeleteKnowledge").addEventListener("click", async () => {
+  const ids = selectedKnowledgeIds();
+  if (!ids.length) return;
+  const payload = await api("/api/knowledge/batch-delete", {
+    method: "POST",
+    body: JSON.stringify({ ids })
+  });
+  data = payload.data;
+  renderAll();
+});
+
+document.querySelector("#batchEditKnowledge").addEventListener("click", () => {
+  if (!selectedKnowledgeIds().length) return;
+  els.knowledgeBatchForm.reset();
+  document.querySelector("#knowledgeBatchModal").showModal();
+});
+
+els.knowledgeBatchForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const fields = Object.fromEntries(new FormData(event.currentTarget).entries());
+  const payload = await api("/api/knowledge/batch-update", {
+    method: "POST",
+    body: JSON.stringify({ ids: selectedKnowledgeIds(), fields })
+  });
+  data = payload.data;
+  document.querySelector("#knowledgeBatchModal").close();
   renderAll();
 });
 

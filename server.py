@@ -289,6 +289,7 @@ def init_db():
                 entity_id INTEGER DEFAULT 0,
                 tags TEXT DEFAULT '',
                 confidence INTEGER NOT NULL DEFAULT 80,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
@@ -372,6 +373,7 @@ def ensure_knowledge_columns(conn):
         "entity_id": "INTEGER DEFAULT 0",
         "tags": "TEXT DEFAULT ''",
         "confidence": "INTEGER NOT NULL DEFAULT 80",
+        "is_deleted": "INTEGER NOT NULL DEFAULT 0",
         "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
     })
 
@@ -429,6 +431,7 @@ def row_to_knowledge(row):
         "entityId": row["entity_id"],
         "tags": [item.strip() for item in (row["tags"] or "").replace("，", ",").split(",") if item.strip()],
         "confidence": row["confidence"],
+        "isDeleted": row["is_deleted"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
@@ -444,7 +447,7 @@ def upsert_knowledge_entry(conn, category, title, summary, source, entity_type, 
         conn.execute(
             """
             UPDATE knowledge_entries
-            SET title = ?, summary = ?, source = ?, tags = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
+            SET title = ?, summary = ?, source = ?, tags = ?, confidence = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
             (title, summary, source, tags_text, confidence, existing["id"]),
@@ -529,6 +532,112 @@ def sync_knowledge_entries(conn):
     for row in conn.execute("SELECT * FROM workers"):
         item = worker_knowledge(row)
         upsert_knowledge_entry(conn, **item)
+
+
+def knowledge_scope_clause(account):
+    if account and account.get("companyKey"):
+        return " AND company_key = ?", [account["companyKey"]]
+    return "", []
+
+
+def save_knowledge_entry(conn, body, account):
+    require_login(account)
+    tags = body.get("tags", [])
+    if isinstance(tags, list):
+        tags = ", ".join(tags)
+    entry_id = int(body.get("id") or 0)
+    values = (
+        body.get("category", "业务知识").strip() or "业务知识",
+        body.get("title", "").strip(),
+        body.get("summary", "").strip(),
+        body.get("source", "人工维护").strip(),
+        str(tags).strip(),
+        int(body.get("confidence") or 80),
+    )
+    if not values[1] or not values[2]:
+        raise ValueError("标题和内容不能为空")
+    if entry_id:
+        scope_sql, scope_values = knowledge_scope_clause(account)
+        conn.execute(
+            f"""
+            UPDATE knowledge_entries
+            SET category = ?, title = ?, summary = ?, source = ?, tags = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND is_deleted = 0 {scope_sql}
+            """,
+            (*values, entry_id, *scope_values),
+        )
+        return entry_id
+    cursor = conn.execute(
+        """
+        INSERT INTO knowledge_entries
+        (account_id, company_key, category, title, summary, source, entity_type, entity_id, tags, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, 'manual', 0, ?, ?)
+        """,
+        (
+            int(account["id"]),
+            account.get("companyKey", ""),
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[4],
+            values[5],
+        ),
+    )
+    return cursor.lastrowid
+
+
+def delete_knowledge_entries(conn, ids, account):
+    require_login(account)
+    clean_ids = [int(item) for item in ids if str(item).isdigit()]
+    if not clean_ids:
+        return 0
+    placeholders = ",".join("?" for _ in clean_ids)
+    scope_sql, scope_values = knowledge_scope_clause(account)
+    rows = conn.execute(
+        f"SELECT * FROM knowledge_entries WHERE id IN ({placeholders}) AND is_deleted = 0 {scope_sql}",
+        (*clean_ids, *scope_values),
+    ).fetchall()
+    for row in rows:
+        if row["entity_type"] == "demand" and row["entity_id"]:
+            conn.execute("DELETE FROM demands WHERE id = ?", (row["entity_id"],))
+        if row["entity_type"] == "worker" and row["entity_id"]:
+            conn.execute("DELETE FROM workers WHERE id = ?", (row["entity_id"],))
+    conn.execute(
+        f"UPDATE knowledge_entries SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders}) {scope_sql}",
+        (*clean_ids, *scope_values),
+    )
+    return len(rows)
+
+
+def batch_update_knowledge_entries(conn, ids, fields, account):
+    require_login(account)
+    clean_ids = [int(item) for item in ids if str(item).isdigit()]
+    if not clean_ids:
+        return 0
+    allowed = {
+        "category": fields.get("category", "").strip(),
+        "source": fields.get("source", "").strip(),
+        "tags": fields.get("tags", "").strip(),
+    }
+    if fields.get("confidence") not in (None, ""):
+        allowed["confidence"] = int(fields.get("confidence"))
+    assignments = []
+    values = []
+    for key, value in allowed.items():
+        if value != "":
+            assignments.append(f"{key} = ?")
+            values.append(value)
+    if not assignments:
+        return 0
+    assignments.append("updated_at = CURRENT_TIMESTAMP")
+    placeholders = ",".join("?" for _ in clean_ids)
+    scope_sql, scope_values = knowledge_scope_clause(account)
+    conn.execute(
+        f"UPDATE knowledge_entries SET {', '.join(assignments)} WHERE id IN ({placeholders}) AND is_deleted = 0 {scope_sql}",
+        (*values, *clean_ids, *scope_values),
+    )
+    return len(clean_ids)
 
 
 def build_insights(demands, workers):
@@ -885,6 +994,7 @@ def get_payload(account=None):
         demand_where = scoped_where(account)
         worker_where = scoped_where(account)
         knowledge_where = scoped_where(account)
+        knowledge_where = f"{knowledge_where} {'AND' if knowledge_where else 'WHERE'} is_deleted = 0"
         demands = [row_to_demand(row) for row in conn.execute(f"SELECT * FROM demands {demand_where} ORDER BY start_date, id")]
         workers = [row_to_worker(row) for row in conn.execute(f"SELECT * FROM workers {worker_where} ORDER BY id DESC")]
         chat = [dict(row) for row in conn.execute("SELECT role, text FROM chat_messages ORDER BY id")]
@@ -1076,9 +1186,48 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "请先登录账号后再重建知识库"}, status=401)
                 return
             with connect() as conn:
-                conn.execute("DELETE FROM knowledge_entries")
+                conn.execute("DELETE FROM knowledge_entries WHERE entity_type != 'manual'")
                 sync_knowledge_entries(conn)
             self.send_json({"ok": True, "data": get_payload(account)})
+            return
+        if parsed.path == "/api/knowledge/save":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再维护知识库"}, status=401)
+                return
+            body = self.read_json()
+            try:
+                with connect() as conn:
+                    entry_id = save_knowledge_entry(conn, body, account)
+                self.send_json({"ok": True, "id": entry_id, "data": get_payload(account)})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+        if parsed.path == "/api/knowledge/delete":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再维护知识库"}, status=401)
+                return
+            body = self.read_json()
+            with connect() as conn:
+                count = delete_knowledge_entries(conn, [body.get("id")], account)
+            self.send_json({"ok": True, "count": count, "data": get_payload(account)})
+            return
+        if parsed.path == "/api/knowledge/batch-delete":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再维护知识库"}, status=401)
+                return
+            body = self.read_json()
+            with connect() as conn:
+                count = delete_knowledge_entries(conn, body.get("ids", []), account)
+            self.send_json({"ok": True, "count": count, "data": get_payload(account)})
+            return
+        if parsed.path == "/api/knowledge/batch-update":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再维护知识库"}, status=401)
+                return
+            body = self.read_json()
+            with connect() as conn:
+                count = batch_update_knowledge_entries(conn, body.get("ids", []), body.get("fields", {}), account)
+            self.send_json({"ok": True, "count": count, "data": get_payload(account)})
             return
         self.send_json({"ok": False, "error": "接口不存在"}, status=404)
 

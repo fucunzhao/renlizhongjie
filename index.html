@@ -176,7 +176,12 @@
     <section class="view" id="knowledge">
       <div class="toolbar split">
         <input id="knowledgeSearch" type="search" placeholder="搜索企业规则、岗位、求职者画像、标签">
-        <button class="ghost" id="rebuildKnowledge" data-write>重建知识库索引</button>
+        <div class="top-actions">
+          <button class="ghost" id="newKnowledge" data-write>新增知识</button>
+          <button class="ghost" id="batchEditKnowledge" data-write>批量修改</button>
+          <button class="ghost" id="batchDeleteKnowledge" data-write>批量删除</button>
+          <button class="ghost" id="rebuildKnowledge" data-write>重建知识库索引</button>
+        </div>
       </div>
       <div class="metrics" id="knowledgeMetrics"></div>
       <div class="layout two-col">
@@ -312,6 +317,47 @@
       <footer>
         <button type="button" data-close-modal="workerModal" class="ghost">取消</button>
         <button class="primary" value="default">保存求职者</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="knowledgeModal">
+    <form method="dialog" class="modal-card" id="knowledgeForm">
+      <header>
+        <h2>维护知识条目</h2>
+        <button type="button" data-close-modal="knowledgeModal" class="icon-btn" aria-label="关闭">×</button>
+      </header>
+      <input type="hidden" name="id">
+      <div class="form-grid">
+        <label>分类<input name="category" required placeholder="如：企业岗位规则"></label>
+        <label>来源<input name="source" placeholder="如：人工维护"></label>
+        <label>可信度<input name="confidence" type="number" min="1" max="100" value="80"></label>
+        <label>标签<input name="tags" placeholder="逗号分隔"></label>
+      </div>
+      <label>标题<input name="title" required></label>
+      <label>内容摘要<textarea name="summary" required></textarea></label>
+      <footer>
+        <button type="button" data-close-modal="knowledgeModal" class="ghost">取消</button>
+        <button class="primary" value="default">保存知识</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="knowledgeBatchModal">
+    <form method="dialog" class="modal-card" id="knowledgeBatchForm">
+      <header>
+        <h2>批量修改知识条目</h2>
+        <button type="button" data-close-modal="knowledgeBatchModal" class="icon-btn" aria-label="关闭">×</button>
+      </header>
+      <div class="form-grid">
+        <label>分类<input name="category" placeholder="留空则不修改"></label>
+        <label>来源<input name="source" placeholder="留空则不修改"></label>
+        <label>可信度<input name="confidence" type="number" min="1" max="100" placeholder="留空则不修改"></label>
+        <label>标签<input name="tags" placeholder="留空则不修改"></label>
+      </div>
+      <footer>
+        <button type="button" data-close-modal="knowledgeBatchModal" class="ghost">取消</button>
+        <button class="primary" value="default">确认批量修改</button>
       </footer>
     </form>
   </dialog>
