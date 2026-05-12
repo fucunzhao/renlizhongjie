@@ -17,6 +17,7 @@
     </div>
     <nav class="nav" aria-label="主导航">
       <button class="nav-item active" data-view="dashboard">总览</button>
+      <button class="nav-item" data-view="collector">模糊采集</button>
       <button class="nav-item" data-view="calendar">全年用工日历</button>
       <button class="nav-item" data-view="demands">企业需求</button>
       <button class="nav-item" data-view="workers">求职者库</button>
@@ -60,6 +61,53 @@
           <div id="taskList" class="list"></div>
         </section>
       </div>
+    </section>
+
+    <section class="view" id="collector">
+      <div class="layout two-col">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>模糊输入采集</h2>
+            <span>粘贴微信文字或上传文本文件</span>
+          </div>
+          <div class="collector-form">
+            <label>上传文件
+              <input id="fuzzyFile" type="file" accept=".txt,.md,.csv,.json">
+            </label>
+            <label>整段文字
+              <textarea id="fuzzyText" placeholder="把企业招聘简章、微信群消息、岗位说明整段粘贴到这里"></textarea>
+            </label>
+            <div class="public-actions">
+              <button class="ghost" id="clearFuzzy">清空</button>
+              <button class="primary" id="parseFuzzy">自动识别</button>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>识别说明</h2>
+            <span>第一阶段规则识别</span>
+          </div>
+          <div class="knowledge-block">
+            <strong>可识别内容</strong>
+            企业名称、岗位、用工类型、地点、薪资、年龄、人数、食宿、体检、面试时间等会被整理为待确认需求。
+          </div>
+          <div class="knowledge-block">
+            <strong>导入后沉淀</strong>
+            确认导入后会进入企业需求、全年日历和私有知识库，成为后续推荐和问答依据。
+          </div>
+        </section>
+      </div>
+      <section class="panel collector-results">
+        <div class="panel-head">
+          <h2>待确认结果</h2>
+          <span id="fuzzyCount">暂无识别结果</span>
+        </div>
+        <div id="fuzzyResults" class="list"></div>
+        <div class="public-actions">
+          <button class="primary" id="importFuzzy">确认导入企业需求</button>
+        </div>
+      </section>
     </section>
 
     <section class="view" id="calendar">

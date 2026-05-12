@@ -482,6 +482,34 @@ tr:last-child td {
   gap: 12px;
 }
 
+.collector-form {
+  display: grid;
+  gap: 14px;
+}
+
+.collector-form label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.collector-form textarea {
+  min-height: 260px;
+}
+
+.collector-results {
+  margin-top: 18px;
+}
+
+.fuzzy-card {
+  display: grid;
+  gap: 12px;
+}
+
+.fuzzy-card .form-grid {
+  margin: 0;
+}
+
 .knowledge-block {
   padding: 12px;
   border: 1px solid var(--line);

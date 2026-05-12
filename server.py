@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sqlite3
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -509,6 +510,132 @@ def build_insights(demands, workers):
     }
 
 
+def split_fuzzy_sections(text):
+    cleaned = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    parts = re.split(r"\n\s*\n+|(?=\n?乐颜～[:：]?)", cleaned)
+    sections = [part.replace("乐颜～:", "").replace("乐颜～：", "").strip() for part in parts if part.strip()]
+    return sections or ([cleaned] if cleaned else [])
+
+
+def find_first(patterns, text, default=""):
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1).strip()
+    return default
+
+
+def infer_company(section):
+    lines = [line.strip() for line in section.splitlines() if line.strip()]
+    for line in lines[:4]:
+        if any(word in line for word in ["厂", "公司", "物流", "新能源", "车标"]):
+            return re.sub(r"招聘|大量|急招|涨工资了|周结|长白班|可周结", "", line).strip(" ：:，,")
+    return lines[0][:30] if lines else "待确认企业"
+
+
+def infer_role(section):
+    role = find_first(
+        [
+            r"岗位[:：]\s*([^\n]+)",
+            r"招聘岗位[:：]\s*([^\n]+)",
+            r"急招[！!]*\s*([^\n，,。；;]+)",
+            r"(\S*工(?:/[^，。\n]+)*)",
+        ],
+        section,
+        "普工",
+    )
+    return role[:60]
+
+
+def infer_type(section):
+    if "日结" in section:
+        return "日结工"
+    if "暑假" in section or "寒假" in section or "旺季" in section:
+        return "季节工"
+    if "短期" in section or "周结" in section:
+        return "短期工"
+    return "长期工"
+
+
+def infer_salary(section):
+    salary = find_first(
+        [
+            r"薪资待遇[:：]?\s*([^\n]+)",
+            r"工价[:：]?\s*([^\n]+)",
+            r"(\d{2}(?:\+\d+)?\s*元?\s*/?\s*(?:小时|时|h|H))",
+            r"(综合工资\s*\d+\s*[-到—]\s*\d+)",
+            r"(\d+\s*\*\s*12\s*=\s*\d+\s*/?天?)",
+        ],
+        section,
+        "",
+    )
+    return salary[:100]
+
+
+def infer_age(section):
+    return find_first([r"年龄[:：]?\s*(\d{2}\s*[-~到—]\s*\d{2}\s*岁?)", r"(\d{2}\s*[-~到—]\s*\d{2}\s*周?岁?)"], section, "")
+
+
+def infer_location(section, company):
+    for place in ["柳东官塘", "柳东花岭", "柳东花玲", "柳州市鱼峰区车园", "柳东", "官塘", "花岭", "花玲"]:
+        if place in section or place in company:
+            return place
+    return "待确认地点"
+
+
+def infer_headcount(section):
+    count = find_first([r"需求\s*(\d+)\s*人", r"招聘\s*(\d+)\s*人", r"(\d+)\s*名"], section, "")
+    return int(count) if count.isdigit() else 20
+
+
+def parse_fuzzy_demands(text):
+    results = []
+    for section in split_fuzzy_sections(text):
+        company = infer_company(section)
+        results.append(
+            {
+                "company": company,
+                "role": infer_role(section),
+                "type": infer_type(section),
+                "location": infer_location(section, company),
+                "start": find_first([r"开始(?:日期|时间)?[:：]\s*(\d{4}-\d{2}-\d{2})"], section, "2026-05-13"),
+                "end": find_first([r"结束(?:日期|时间)?[:：]\s*(\d{4}-\d{2}-\d{2})"], section, ""),
+                "headcount": infer_headcount(section),
+                "signed": 0,
+                "salary": infer_salary(section),
+                "age": infer_age(section),
+                "notes": section[:1800],
+                "confidence": 72,
+                "sourceText": section,
+            }
+        )
+    return results
+
+
+def insert_demand(conn, body):
+    cursor = conn.execute(
+        """
+        INSERT INTO demands
+        (company, role, type, location, start_date, end_date, headcount, signed, salary, age, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            body.get("company", "").strip(),
+            body.get("role", "").strip(),
+            body.get("type", "长期工"),
+            body.get("location", "").strip(),
+            body.get("start", ""),
+            body.get("end", ""),
+            int(body.get("headcount") or 0),
+            int(body.get("signed") or 0),
+            body.get("salary", "").strip(),
+            body.get("age", "").strip(),
+            body.get("notes", "").strip(),
+        ),
+    )
+    return cursor.lastrowid
+
+
 def get_payload():
     with connect() as conn:
         sync_knowledge_entries(conn)
@@ -573,27 +700,30 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/demands":
             body = self.read_json()
             with connect() as conn:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO demands
-                    (company, role, type, location, start_date, end_date, headcount, signed, salary, age, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        body.get("company", "").strip(),
-                        body.get("role", "").strip(),
-                        body.get("type", "长期工"),
-                        body.get("location", "").strip(),
-                        body.get("start", ""),
-                        body.get("end", ""),
-                        int(body.get("headcount") or 0),
-                        int(body.get("signed") or 0),
-                        body.get("salary", "").strip(),
-                        body.get("age", "").strip(),
-                        body.get("notes", "").strip(),
-                    ),
-                )
-            self.send_json({"ok": True, "id": cursor.lastrowid, "data": get_payload()})
+                demand_id = insert_demand(conn, body)
+                sync_knowledge_entries(conn)
+            self.send_json({"ok": True, "id": demand_id, "data": get_payload()})
+            return
+        if parsed.path == "/api/fuzzy/parse":
+            body = self.read_json()
+            text = body.get("text", "")
+            if not text.strip():
+                self.send_json({"ok": False, "error": "请先粘贴或上传需要识别的文字"}, status=400)
+                return
+            self.send_json({"ok": True, "items": parse_fuzzy_demands(text)})
+            return
+        if parsed.path == "/api/fuzzy/import":
+            body = self.read_json()
+            items = body.get("items", [])
+            if not isinstance(items, list) or not items:
+                self.send_json({"ok": False, "error": "没有可导入的数据"}, status=400)
+                return
+            ids = []
+            with connect() as conn:
+                for item in items:
+                    ids.append(insert_demand(conn, item))
+                sync_knowledge_entries(conn)
+            self.send_json({"ok": True, "ids": ids, "data": get_payload()})
             return
         if parsed.path == "/api/workers":
             body = self.read_json()

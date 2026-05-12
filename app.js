@@ -6,11 +6,16 @@ let data = {
   workers: [],
   chat: []
 };
+let fuzzyItems = [];
 
 const els = {
   pageTitle: document.querySelector("#pageTitle"),
   sideSummary: document.querySelector("#sideSummary"),
   metrics: document.querySelector("#metrics"),
+  fuzzyText: document.querySelector("#fuzzyText"),
+  fuzzyFile: document.querySelector("#fuzzyFile"),
+  fuzzyResults: document.querySelector("#fuzzyResults"),
+  fuzzyCount: document.querySelector("#fuzzyCount"),
   urgentList: document.querySelector("#urgentList"),
   taskList: document.querySelector("#taskList"),
   yearSelect: document.querySelector("#yearSelect"),
@@ -79,6 +84,29 @@ function renderAll() {
   renderKnowledgeBase();
   renderKnowledge();
   renderChat();
+}
+
+renderFuzzyResults();
+
+function renderFuzzyResults() {
+  els.fuzzyCount.textContent = fuzzyItems.length ? `已识别 ${fuzzyItems.length} 条，导入前可修改` : "暂无识别结果";
+  els.fuzzyResults.innerHTML = fuzzyItems.map((item, index) => `
+    <article class="item fuzzy-card" data-fuzzy-index="${index}">
+      <div class="item-top"><strong>识别结果 ${index + 1}</strong>${tag(`可信度 ${item.confidence || 70}%`)}</div>
+      <div class="form-grid">
+        <label>企业<input data-field="company" value="${escapeAttr(item.company)}"></label>
+        <label>岗位<input data-field="role" value="${escapeAttr(item.role)}"></label>
+        <label>类型<select data-field="type">${["长期工", "短期工", "日结工", "季节工"].map(type => `<option ${item.type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label>
+        <label>地点<input data-field="location" value="${escapeAttr(item.location)}"></label>
+        <label>开始日期<input data-field="start" type="date" value="${escapeAttr(item.start)}"></label>
+        <label>结束日期<input data-field="end" type="date" value="${escapeAttr(item.end)}"></label>
+        <label>人数<input data-field="headcount" type="number" min="1" value="${Number(item.headcount) || 20}"></label>
+        <label>年龄<input data-field="age" value="${escapeAttr(item.age)}"></label>
+        <label>薪资<input data-field="salary" value="${escapeAttr(item.salary)}"></label>
+      </div>
+      <label>原文/备注<textarea data-field="notes">${escapeHtml(item.notes || "")}</textarea></label>
+    </article>
+  `).join("") || `<p class="item-meta">粘贴文字或上传文本后，点击自动识别。</p>`;
 }
 
 function renderSidebar() {
@@ -349,6 +377,22 @@ function escapeHtml(text) {
   }[char]));
 }
 
+function escapeAttr(text) {
+  return escapeHtml(String(text || ""));
+}
+
+function collectFuzzyItemsFromDom() {
+  return [...document.querySelectorAll("[data-fuzzy-index]")].map(card => {
+    const item = {};
+    card.querySelectorAll("[data-field]").forEach(field => {
+      item[field.dataset.field] = field.value.trim();
+    });
+    item.headcount = Number(item.headcount || 20);
+    item.signed = 0;
+    return item;
+  });
+}
+
 function formDataToDemand(formData) {
   return {
     company: formData.get("company").trim(),
@@ -435,6 +479,42 @@ els.typeFilter.addEventListener("change", renderCalendar);
 els.demandSearch.addEventListener("input", renderDemandTable);
 els.workerSearch.addEventListener("input", renderWorkers);
 els.knowledgeSearch.addEventListener("input", renderKnowledgeBase);
+
+document.querySelector("#parseFuzzy").addEventListener("click", async () => {
+  const payload = await api("/api/fuzzy/parse", {
+    method: "POST",
+    body: JSON.stringify({ text: els.fuzzyText.value })
+  });
+  fuzzyItems = payload.items;
+  renderFuzzyResults();
+});
+
+document.querySelector("#importFuzzy").addEventListener("click", async () => {
+  const items = collectFuzzyItemsFromDom();
+  if (!items.length) return;
+  const payload = await api("/api/fuzzy/import", {
+    method: "POST",
+    body: JSON.stringify({ items })
+  });
+  data = payload.data;
+  fuzzyItems = [];
+  els.fuzzyText.value = "";
+  renderFuzzyResults();
+  renderAll();
+});
+
+document.querySelector("#clearFuzzy").addEventListener("click", () => {
+  fuzzyItems = [];
+  els.fuzzyText.value = "";
+  els.fuzzyFile.value = "";
+  renderFuzzyResults();
+});
+
+els.fuzzyFile.addEventListener("change", async event => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  els.fuzzyText.value = await file.text();
+});
 
 els.chatForm.addEventListener("submit", async event => {
   event.preventDefault();
