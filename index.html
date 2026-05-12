@@ -40,8 +40,8 @@
       <div class="top-actions">
         <span class="badge" id="accountBadge">未登录</span>
         <a class="ghost link-button" href="applicant.html" target="_blank">求职者自助登记</a>
-        <button class="ghost" id="resetDemo">恢复示例数据</button>
-        <button class="primary" data-open-modal="demandModal">新增用工需求</button>
+        <button class="ghost" id="resetDemo" data-write>恢复示例数据</button>
+        <button class="primary" data-open-modal="demandModal" data-write>新增用工需求</button>
       </div>
     </header>
 
@@ -112,7 +112,7 @@
         </div>
         <div id="fuzzyResults" class="list"></div>
         <div class="public-actions">
-          <button type="button" class="primary" id="importFuzzy">确认导入企业需求</button>
+          <button type="button" class="primary" id="importFuzzy" data-write>确认导入企业需求</button>
         </div>
       </section>
     </section>
@@ -144,7 +144,7 @@
     <section class="view" id="demands">
       <div class="toolbar split">
         <input id="demandSearch" type="search" placeholder="搜索企业、岗位、地点">
-        <button class="primary" data-open-modal="demandModal">新增用工需求</button>
+        <button class="primary" data-open-modal="demandModal" data-write>新增用工需求</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -168,7 +168,7 @@
     <section class="view" id="workers">
       <div class="toolbar split">
         <input id="workerSearch" type="search" placeholder="搜索姓名、标签、地区">
-        <button class="primary" data-open-modal="workerModal">新增求职者</button>
+        <button class="primary" data-open-modal="workerModal" data-write>新增求职者</button>
       </div>
       <div class="worker-grid" id="workerGrid"></div>
     </section>
@@ -176,7 +176,7 @@
     <section class="view" id="knowledge">
       <div class="toolbar split">
         <input id="knowledgeSearch" type="search" placeholder="搜索企业规则、岗位、求职者画像、标签">
-        <button class="ghost" id="rebuildKnowledge">重建知识库索引</button>
+        <button class="ghost" id="rebuildKnowledge" data-write>重建知识库索引</button>
       </div>
       <div class="metrics" id="knowledgeMetrics"></div>
       <div class="layout two-col">
@@ -208,8 +208,8 @@
             <div class="form-grid">
               <label>账号<input name="name" required placeholder="登录账号"></label>
               <label>密码<input name="password" type="password" required></label>
-              <label>账号类型<select name="accountType"><option value="enterprise">企业账号</option><option value="staff">公司业务员</option></select></label>
-              <label>企业名称<input name="company" placeholder="企业账号建议填写"></label>
+              <label>账号角色<select name="role"><option value="owner">老板/管理员</option><option value="sales">业务员</option><option value="dispatcher">调度员</option><option value="service">客服人员</option></select></label>
+              <label>企业名称<input name="company" required placeholder="同一企业名称共享私有知识库"></label>
               <label>联系电话<input name="phone"></label>
             </div>
             <button class="primary" type="submit">注册并登录</button>

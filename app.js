@@ -111,11 +111,17 @@ function renderAll() {
 }
 
 renderFuzzyResults();
+renderAccount();
 
 function renderAccount() {
-  const label = account ? `${account.type === "enterprise" ? "企业" : "业务"}：${account.company || account.name}` : "未登录";
+  const roleNames = { owner: "老板/管理员", sales: "业务员", dispatcher: "调度员", service: "客服人员" };
+  const label = account ? `${account.company || account.name}｜${roleNames[account.role] || account.role}` : "未登录";
   els.accountBadge.textContent = label;
   els.accountStatus.textContent = account ? `当前登录：${label}` : "当前未登录";
+  document.querySelectorAll("[data-write]").forEach(item => {
+    item.disabled = !account;
+    item.title = account ? "" : "请先登录账号";
+  });
 }
 
 function renderFuzzyResults() {

@@ -238,6 +238,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS demands (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER DEFAULT 0,
+                company_key TEXT DEFAULT '',
                 company TEXT NOT NULL,
                 role TEXT NOT NULL,
                 type TEXT NOT NULL,
@@ -254,6 +255,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS workers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER DEFAULT 0,
+                company_key TEXT DEFAULT '',
                 name TEXT NOT NULL,
                 phone TEXT DEFAULT '',
                 gender TEXT DEFAULT '',
@@ -278,6 +280,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS knowledge_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER DEFAULT 0,
+                company_key TEXT DEFAULT '',
                 category TEXT NOT NULL,
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,
@@ -293,6 +296,8 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 account_type TEXT NOT NULL DEFAULT 'enterprise',
+                role TEXT DEFAULT 'owner',
+                company_key TEXT DEFAULT '',
                 company TEXT DEFAULT '',
                 phone TEXT DEFAULT '',
                 password_hash TEXT NOT NULL,
@@ -303,6 +308,9 @@ def init_db():
         )
         ensure_table_columns(conn, "demands", {"account_id": "INTEGER DEFAULT 0"})
         ensure_table_columns(conn, "workers", {"account_id": "INTEGER DEFAULT 0"})
+        ensure_table_columns(conn, "demands", {"company_key": "TEXT DEFAULT ''"})
+        ensure_table_columns(conn, "workers", {"company_key": "TEXT DEFAULT ''"})
+        ensure_table_columns(conn, "accounts", {"role": "TEXT DEFAULT 'owner'", "company_key": "TEXT DEFAULT ''"})
         ensure_worker_columns(conn)
         ensure_knowledge_columns(conn)
         demand_count = conn.execute("SELECT COUNT(*) FROM demands").fetchone()[0]
@@ -358,6 +366,7 @@ def ensure_worker_columns(conn):
 def ensure_knowledge_columns(conn):
     ensure_table_columns(conn, "knowledge_entries", {
         "account_id": "INTEGER DEFAULT 0",
+        "company_key": "TEXT DEFAULT ''",
         "source": "TEXT DEFAULT ''",
         "entity_type": "TEXT DEFAULT ''",
         "entity_id": "INTEGER DEFAULT 0",
@@ -371,6 +380,7 @@ def row_to_demand(row):
     return {
         "id": row["id"],
         "accountId": row["account_id"],
+        "companyKey": row["company_key"],
         "company": row["company"],
         "role": row["role"],
         "type": row["type"],
@@ -389,6 +399,7 @@ def row_to_worker(row):
     return {
         "id": row["id"],
         "accountId": row["account_id"],
+        "companyKey": row["company_key"],
         "name": row["name"],
         "phone": row["phone"],
         "gender": row["gender"],
@@ -409,6 +420,7 @@ def row_to_knowledge(row):
     return {
         "id": row["id"],
         "accountId": row["account_id"],
+        "companyKey": row["company_key"],
         "category": row["category"],
         "title": row["title"],
         "summary": row["summary"],
@@ -422,11 +434,11 @@ def row_to_knowledge(row):
     }
 
 
-def upsert_knowledge_entry(conn, category, title, summary, source, entity_type, entity_id, tags, confidence=80, account_id=0):
+def upsert_knowledge_entry(conn, category, title, summary, source, entity_type, entity_id, tags, confidence=80, account_id=0, company_key=""):
     tags_text = ", ".join(tags) if isinstance(tags, list) else str(tags or "")
     existing = conn.execute(
-        "SELECT id FROM knowledge_entries WHERE entity_type = ? AND entity_id = ? AND category = ? AND account_id = ?",
-        (entity_type, entity_id, category, account_id),
+        "SELECT id FROM knowledge_entries WHERE entity_type = ? AND entity_id = ? AND category = ? AND company_key = ?",
+        (entity_type, entity_id, category, company_key),
     ).fetchone()
     if existing:
         conn.execute(
@@ -441,10 +453,10 @@ def upsert_knowledge_entry(conn, category, title, summary, source, entity_type, 
         conn.execute(
             """
             INSERT INTO knowledge_entries
-            (account_id, category, title, summary, source, entity_type, entity_id, tags, confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (account_id, company_key, category, title, summary, source, entity_type, entity_id, tags, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (account_id, category, title, summary, source, entity_type, entity_id, tags_text, confidence),
+            (account_id, company_key, category, title, summary, source, entity_type, entity_id, tags_text, confidence),
         )
 
 
@@ -475,6 +487,7 @@ def demand_knowledge(row):
         "tags": tags,
         "confidence": 90,
         "account_id": demand.get("accountId", 0) or 0,
+        "company_key": demand.get("companyKey", "") or "",
     }
 
 
@@ -498,10 +511,18 @@ def worker_knowledge(row):
         "tags": tags,
         "confidence": 82,
         "account_id": worker.get("accountId", 0) or 0,
+        "company_key": worker.get("companyKey", "") or "",
     }
 
 
 def sync_knowledge_entries(conn):
+    conn.execute(
+        """
+        UPDATE demands
+        SET company_key = lower(replace(company, ' ', ''))
+        WHERE (company_key IS NULL OR company_key = '') AND account_id = 0
+        """
+    )
     for row in conn.execute("SELECT * FROM demands"):
         item = demand_knowledge(row)
         upsert_knowledge_entry(conn, **item)
@@ -538,6 +559,10 @@ def hash_password(password):
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
+def normalize_company_key(company):
+    return re.sub(r"\s+", "", (company or "").strip()).lower()
+
+
 def account_public(row):
     if not row:
         return None
@@ -545,6 +570,8 @@ def account_public(row):
         "id": row["id"],
         "name": row["name"],
         "type": row["account_type"],
+        "role": row["role"],
+        "companyKey": row["company_key"],
         "company": row["company"],
         "phone": row["phone"],
         "token": row["token"],
@@ -563,9 +590,18 @@ def get_account_from_headers(headers):
 
 def scoped_where(account, table_alias=""):
     prefix = f"{table_alias}." if table_alias else ""
-    if account and account.get("type") == "enterprise":
-        return f"WHERE {prefix}account_id = {int(account['id'])}"
+    if account and account.get("companyKey"):
+        return f"WHERE {prefix}company_key = '{account['companyKey']}'"
     return ""
+
+
+def require_login(account):
+    if not account:
+        raise PermissionError("请先登录账号后再操作。")
+
+
+def can_write(account):
+    return bool(account and account.get("role") in {"owner", "sales", "dispatcher", "service"})
 
 
 def split_fuzzy_sections(text):
@@ -781,15 +817,18 @@ def extract_uploaded_text(filename, raw):
 
 
 def insert_demand(conn, body, account=None):
+    require_login(account)
     account_id = int(account["id"]) if account else int(body.get("accountId") or 0)
+    company_key = account.get("companyKey") or normalize_company_key(body.get("company", ""))
     cursor = conn.execute(
         """
         INSERT INTO demands
-        (account_id, company, role, type, location, start_date, end_date, headcount, signed, salary, age, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (account_id, company_key, company, role, type, location, start_date, end_date, headcount, signed, salary, age, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account_id,
+            company_key,
             body.get("company", "").strip(),
             body.get("role", "").strip(),
             body.get("type", "长期工"),
@@ -807,18 +846,21 @@ def insert_demand(conn, body, account=None):
 
 
 def insert_worker(conn, body, account=None):
+    require_login(account)
     account_id = int(account["id"]) if account else int(body.get("accountId") or 0)
+    company_key = account.get("companyKey") or ""
     tags = body.get("tags", [])
     if isinstance(tags, list):
         tags = ", ".join(tags)
     cursor = conn.execute(
         """
         INSERT INTO workers
-        (account_id, name, phone, gender, age, location, available, period, expected_role, salary, score, tags, note, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (account_id, company_key, name, phone, gender, age, location, available, period, expected_role, salary, score, tags, note, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account_id,
+            company_key,
             body.get("name", "").strip(),
             body.get("phone", "").strip(),
             body.get("gender", "").strip(),
@@ -918,12 +960,14 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 cursor = conn.execute(
                     """
-                    INSERT INTO accounts (name, account_type, company, phone, password_hash, token)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO accounts (name, account_type, role, company_key, company, phone, password_hash, token)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
-                        body.get("accountType", "enterprise"),
+                        "enterprise",
+                        body.get("role", "owner"),
+                        normalize_company_key(body.get("company", "")),
                         body.get("company", "").strip(),
                         body.get("phone", "").strip(),
                         hash_password(password),
@@ -943,6 +987,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "account": account_public(row), "data": get_payload(account_public(row))})
             return
         if parsed.path == "/api/demands":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再修改信息"}, status=401)
+                return
             body = self.read_json()
             with connect() as conn:
                 demand_id = insert_demand(conn, body, account)
@@ -978,6 +1025,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
         if parsed.path == "/api/fuzzy/import":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再导入信息"}, status=401)
+                return
             body = self.read_json()
             items = body.get("items", [])
             kind = body.get("kind", "demand")
@@ -992,6 +1042,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "ids": ids, "data": get_payload(account)})
             return
         if parsed.path == "/api/workers":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再修改信息"}, status=401)
+                return
             body = self.read_json()
             with connect() as conn:
                 worker_id = insert_worker(conn, body, account)
@@ -1012,10 +1065,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "answer": answer, "data": get_payload(account)})
             return
         if parsed.path == "/api/reset":
+            if not account or account.get("role") != "owner":
+                self.send_json({"ok": False, "error": "只有老板/管理员可以恢复示例数据"}, status=403)
+                return
             reset_seed_data()
             self.send_json({"ok": True, "data": get_payload(account)})
             return
         if parsed.path == "/api/knowledge/rebuild":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再重建知识库"}, status=401)
+                return
             with connect() as conn:
                 conn.execute("DELETE FROM knowledge_entries")
                 sync_knowledge_entries(conn)
