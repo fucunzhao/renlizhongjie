@@ -197,7 +197,10 @@ function renderWorkers() {
       <article class="worker-card">
         <h3>${worker.name}</h3>
         <p class="item-meta">${worker.location}｜${worker.available}｜${worker.period}</p>
+        <p class="item-meta">${[worker.gender, worker.age ? `${worker.age}岁` : "", worker.phone].filter(Boolean).join("｜") || "基础信息待补充"}</p>
+        ${worker.expectedRole ? `<p>期望岗位：${worker.expectedRole}</p>` : ""}
         <p>${worker.salary || "薪资待确认"}｜稳定性 ${worker.score} 分</p>
+        ${worker.note ? `<p class="item-meta">备注：${worker.note}</p>` : ""}
         <div class="tags">${worker.tags.map(item => tag(item)).join("")}</div>
         <div class="item" style="margin-top:12px">
           <strong>推荐岗位</strong>
@@ -321,12 +324,18 @@ function formDataToDemand(formData) {
 function formDataToWorker(formData) {
   return {
     name: formData.get("name").trim(),
+    phone: formData.get("phone")?.trim() || "",
+    gender: formData.get("gender") || "",
+    age: formData.get("age") || "",
     location: formData.get("location").trim(),
     available: formData.get("available").trim(),
     period: formData.get("period"),
+    expectedRole: formData.get("expectedRole")?.trim() || "",
     salary: formData.get("salary").trim(),
     score: Number(formData.get("score")),
-    tags: formData.get("tags").split(/[,，]/).map(item => item.trim()).filter(Boolean)
+    tags: formData.get("tags").split(/[,，]/).map(item => item.trim()).filter(Boolean),
+    note: formData.get("note")?.trim() || "",
+    source: "业务员录入"
   };
 }
 

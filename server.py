@@ -248,12 +248,18 @@ def init_db():
             CREATE TABLE IF NOT EXISTS workers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
+                phone TEXT DEFAULT '',
+                gender TEXT DEFAULT '',
+                age TEXT DEFAULT '',
                 location TEXT NOT NULL,
                 available TEXT DEFAULT '',
                 period TEXT DEFAULT '',
+                expected_role TEXT DEFAULT '',
                 salary TEXT DEFAULT '',
                 score INTEGER NOT NULL DEFAULT 70,
                 tags TEXT DEFAULT '',
+                note TEXT DEFAULT '',
+                source TEXT DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS chat_messages (
@@ -264,6 +270,7 @@ def init_db():
             );
             """
         )
+        ensure_worker_columns(conn)
         demand_count = conn.execute("SELECT COUNT(*) FROM demands").fetchone()[0]
         if demand_count == 0:
             conn.executemany(
@@ -295,6 +302,21 @@ def init_db():
             )
 
 
+def ensure_worker_columns(conn):
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(workers)")}
+    columns = {
+        "phone": "TEXT DEFAULT ''",
+        "gender": "TEXT DEFAULT ''",
+        "age": "TEXT DEFAULT ''",
+        "expected_role": "TEXT DEFAULT ''",
+        "note": "TEXT DEFAULT ''",
+        "source": "TEXT DEFAULT ''",
+    }
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE workers ADD COLUMN {name} {definition}")
+
+
 def row_to_demand(row):
     return {
         "id": row["id"],
@@ -316,11 +338,17 @@ def row_to_worker(row):
     return {
         "id": row["id"],
         "name": row["name"],
+        "phone": row["phone"],
+        "gender": row["gender"],
+        "age": row["age"],
         "location": row["location"],
         "available": row["available"],
         "period": row["period"],
+        "expectedRole": row["expected_role"],
         "salary": row["salary"],
         "score": row["score"],
+        "note": row["note"],
+        "source": row["source"],
         "tags": [item.strip() for item in (row["tags"] or "").replace("，", ",").split(",") if item.strip()],
     }
 
@@ -413,17 +441,23 @@ class Handler(SimpleHTTPRequestHandler):
                 cursor = conn.execute(
                     """
                     INSERT INTO workers
-                    (name, location, available, period, salary, score, tags)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (name, phone, gender, age, location, available, period, expected_role, salary, score, tags, note, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         body.get("name", "").strip(),
+                        body.get("phone", "").strip(),
+                        body.get("gender", "").strip(),
+                        str(body.get("age", "")).strip(),
                         body.get("location", "").strip(),
                         body.get("available", "").strip(),
                         body.get("period", ""),
+                        body.get("expectedRole", body.get("expected_role", "")).strip(),
                         body.get("salary", "").strip(),
                         int(body.get("score") or 70),
                         str(tags),
+                        body.get("note", "").strip(),
+                        body.get("source", "业务员录入").strip(),
                     ),
                 )
             self.send_json({"ok": True, "id": cursor.lastrowid, "data": get_payload()})

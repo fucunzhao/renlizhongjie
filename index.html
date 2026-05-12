@@ -35,6 +35,7 @@
         <h1 id="pageTitle">业务总览</h1>
       </div>
       <div class="top-actions">
+        <a class="ghost link-button" href="applicant.html" target="_blank">求职者自助登记</a>
         <button class="ghost" id="resetDemo">恢复示例数据</button>
         <button class="primary" data-open-modal="demandModal">新增用工需求</button>
       </div>
@@ -180,13 +181,18 @@
       </header>
       <div class="form-grid">
         <label>姓名<input name="name" required></label>
+        <label>手机号<input name="phone" placeholder="求职者联系电话"></label>
+        <label>性别<select name="gender"><option value="">未填写</option><option>男</option><option>女</option></select></label>
+        <label>年龄<input name="age" type="number" min="16" max="65"></label>
         <label>所在地区<input name="location" required></label>
         <label>可到岗时间<input name="available" required placeholder="如：现在可到岗"></label>
+        <label>期望岗位<input name="expectedRole" placeholder="如：普工、质检、注塑"></label>
         <label>期望周期<select name="period"><option>长期稳定</option><option>1-3个月</option><option>7-15天</option><option>暑假工</option><option>周末兼职</option></select></label>
         <label>期望薪资<input name="salary" placeholder="如：6000以上"></label>
         <label>稳定性评分<input name="score" type="number" min="0" max="100" value="80"></label>
       </div>
       <label>技能/偏好标签<textarea name="tags" placeholder="用逗号分隔，如：电子厂经验, 接受夜班, 需要住宿"></textarea></label>
+      <label>备注<textarea name="note" placeholder="例如：不接受夜班、需要住宿、可周结等"></textarea></label>
       <footer>
         <button type="button" data-close-modal="workerModal" class="ghost">取消</button>
         <button class="primary" value="default">保存求职者</button>
