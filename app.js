@@ -1,0 +1,415 @@
+const today = new Date();
+const currentYear = today.getFullYear();
+
+let data = {
+  demands: [],
+  workers: [],
+  chat: []
+};
+
+const els = {
+  pageTitle: document.querySelector("#pageTitle"),
+  sideSummary: document.querySelector("#sideSummary"),
+  metrics: document.querySelector("#metrics"),
+  urgentList: document.querySelector("#urgentList"),
+  taskList: document.querySelector("#taskList"),
+  yearSelect: document.querySelector("#yearSelect"),
+  companyFilter: document.querySelector("#companyFilter"),
+  typeFilter: document.querySelector("#typeFilter"),
+  calendarGrid: document.querySelector("#calendarGrid"),
+  demandSearch: document.querySelector("#demandSearch"),
+  demandTable: document.querySelector("#demandTable"),
+  workerSearch: document.querySelector("#workerSearch"),
+  workerGrid: document.querySelector("#workerGrid"),
+  knowledgeSummary: document.querySelector("#knowledgeSummary"),
+  chatLog: document.querySelector("#chatLog"),
+  chatForm: document.querySelector("#chatForm"),
+  chatInput: document.querySelector("#chatInput")
+};
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "请求失败");
+  return payload;
+}
+
+async function loadData() {
+  const payload = await api("/api/data");
+  data = payload;
+  renderAll();
+}
+
+function remaining(demand) {
+  return Math.max(Number(demand.headcount) - Number(demand.signed || 0), 0);
+}
+
+function monthOf(dateText) {
+  return new Date(`${dateText}T00:00:00`).getMonth();
+}
+
+function formatDateRange(demand) {
+  const start = demand.start?.slice(5) || "待定";
+  const end = demand.end ? demand.end.slice(5) : "长期";
+  return `${start} 至 ${end}`;
+}
+
+function daysUntil(dateText) {
+  const date = new Date(`${dateText}T00:00:00`);
+  return Math.ceil((date - today) / 86400000);
+}
+
+function tag(text, extra = "") {
+  return `<span class="badge ${extra}">${text}</span>`;
+}
+
+function renderAll() {
+  renderSidebar();
+  renderDashboard();
+  renderCalendar();
+  renderDemandTable();
+  renderWorkers();
+  renderKnowledge();
+  renderChat();
+}
+
+function renderSidebar() {
+  if (!data.demands.length) {
+    els.sideSummary.textContent = "暂无企业用工数据。";
+    return;
+  }
+  const totalGap = data.demands.reduce((sum, item) => sum + remaining(item), 0);
+  const next = [...data.demands].sort((a, b) => new Date(a.start) - new Date(b.start))[0];
+  els.sideSummary.textContent = `${data.demands.length} 条企业需求，当前总缺口 ${totalGap} 人。最近启动：${next.company} ${next.role}。`;
+}
+
+function renderDashboard() {
+  const totalNeed = data.demands.reduce((sum, item) => sum + Number(item.headcount), 0);
+  const totalSigned = data.demands.reduce((sum, item) => sum + Number(item.signed || 0), 0);
+  const totalGap = totalNeed - totalSigned;
+  const activeCompanies = new Set(data.demands.map(item => item.company)).size;
+
+  els.metrics.innerHTML = [
+    ["企业需求", `${data.demands.length} 条`],
+    ["全年计划人数", `${totalNeed} 人`],
+    ["当前缺口", `${totalGap} 人`],
+    ["求职者库", `${data.workers.length} 人`]
+  ].map(([label, value]) => `<article class="metric"><span>${label}</span><strong>${value}</strong></article>`).join("");
+
+  const urgent = [...data.demands]
+    .filter(item => remaining(item) > 0)
+    .sort((a, b) => daysUntil(a.start) - daysUntil(b.start) || remaining(b) - remaining(a))
+    .slice(0, 5);
+
+  els.urgentList.innerHTML = urgent.map(item => `
+    <article class="item">
+      <div class="item-top"><strong>${item.company} · ${item.role}</strong>${tag(`缺 ${remaining(item)} 人`, remaining(item) > 60 ? "danger" : "warn")}</div>
+      <div class="item-meta"><span>${formatDateRange(item)}</span><span>${item.location}</span><span>${item.salary}</span></div>
+    </article>
+  `).join("") || `<p class="item-meta">暂无紧急缺口</p>`;
+
+  const tasks = urgent.slice(0, 4).map(item => {
+    const matches = rankWorkers(item).slice(0, 3);
+    return `
+      <article class="item">
+        <div class="item-top"><strong>${item.company} ${item.role}</strong>${tag("预招募")}</div>
+        <div class="item-meta"><span>建议联系：${matches.map(match => match.worker.name).join("、") || "暂无合适人选"}</span></div>
+      </article>
+    `;
+  });
+  tasks.push(`<article class="item"><div class="item-top"><strong>本地知识库</strong>${tag(`${activeCompanies} 家企业`)}</div><div class="item-meta"><span>企业规则、岗位排期和推荐解释已进入后台数据库。</span></div></article>`);
+  els.taskList.innerHTML = tasks.join("");
+}
+
+function renderCalendar() {
+  const selectedBeforeRender = Number(els.yearSelect.value || currentYear);
+  const years = [...new Set(data.demands.map(item => new Date(item.start).getFullYear()))].sort();
+  if (!years.includes(currentYear)) years.unshift(currentYear);
+  els.yearSelect.innerHTML = years.map(year => `<option ${year === selectedBeforeRender ? "selected" : ""}>${year}</option>`).join("");
+
+  const companies = ["all", ...new Set(data.demands.map(item => item.company))];
+  const currentCompany = els.companyFilter.value || "all";
+  els.companyFilter.innerHTML = companies.map(company => `<option value="${company}">${company === "all" ? "全部企业" : company}</option>`).join("");
+  els.companyFilter.value = companies.includes(currentCompany) ? currentCompany : "all";
+
+  const selectedYear = Number(els.yearSelect.value || currentYear);
+  const selectedCompany = els.companyFilter.value || "all";
+  const selectedType = els.typeFilter.value || "all";
+  const filtered = data.demands.filter(item => {
+    const yearMatches = new Date(item.start).getFullYear() === selectedYear;
+    const companyMatches = selectedCompany === "all" || item.company === selectedCompany;
+    const typeMatches = selectedType === "all" || item.type === selectedType;
+    return yearMatches && companyMatches && typeMatches;
+  });
+
+  els.calendarGrid.innerHTML = Array.from({ length: 12 }, (_, month) => {
+    const monthDemands = filtered.filter(item => monthOf(item.start) === month);
+    const monthGap = monthDemands.reduce((sum, item) => sum + remaining(item), 0);
+    return `
+      <section class="month-card">
+        <div class="month-title"><span>${month + 1}月</span><span>${monthGap ? `缺 ${monthGap}` : "无排期"}</span></div>
+        ${monthDemands.map(item => `
+          <div class="mini-demand">
+            <strong>${item.company} · ${item.role}</strong>
+            <span>${item.type}｜${formatDateRange(item)}｜缺 ${remaining(item)} 人</span>
+          </div>
+        `).join("") || `<p class="item-meta">暂无企业用工计划</p>`}
+      </section>
+    `;
+  }).join("");
+}
+
+function renderDemandTable() {
+  const keyword = els.demandSearch.value.trim().toLowerCase();
+  const rows = data.demands.filter(item => {
+    const text = `${item.company} ${item.role} ${item.location} ${item.type} ${item.notes}`.toLowerCase();
+    return text.includes(keyword);
+  });
+  els.demandTable.innerHTML = rows.map(item => {
+    const matches = rankWorkers(item).slice(0, 2);
+    return `
+      <tr>
+        <td><strong>${item.company}</strong><br><span class="item-meta">${item.location}</span></td>
+        <td>${item.role}<br>${tag(item.type)}</td>
+        <td>${formatDateRange(item)}</td>
+        <td>${item.headcount} 人</td>
+        <td>${tag(`${remaining(item)} 人`, remaining(item) > 50 ? "danger" : "warn")}</td>
+        <td>${item.salary}</td>
+        <td>${remaining(item) === 0 ? tag("已满员") : tag("匹配中", "warn")}</td>
+        <td>${matches.map(match => `${match.worker.name} ${match.score}分`).join("<br>") || "暂无"}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function renderWorkers() {
+  const keyword = els.workerSearch.value.trim().toLowerCase();
+  const workers = data.workers.filter(worker => {
+    const text = `${worker.name} ${worker.location} ${worker.available} ${worker.period} ${worker.salary} ${worker.tags.join(" ")}`.toLowerCase();
+    return text.includes(keyword);
+  });
+  els.workerGrid.innerHTML = workers.map(worker => {
+    const best = bestDemandFor(worker);
+    return `
+      <article class="worker-card">
+        <h3>${worker.name}</h3>
+        <p class="item-meta">${worker.location}｜${worker.available}｜${worker.period}</p>
+        <p>${worker.salary || "薪资待确认"}｜稳定性 ${worker.score} 分</p>
+        <div class="tags">${worker.tags.map(item => tag(item)).join("")}</div>
+        <div class="item" style="margin-top:12px">
+          <strong>推荐岗位</strong>
+          <span class="item-meta">${best ? `${best.demand.company} · ${best.demand.role}（${best.score}分）` : "暂无合适岗位"}</span>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderKnowledge() {
+  const byType = groupBy(data.demands, "type");
+  const byCompany = groupBy(data.demands, "company");
+  const highGap = [...data.demands].sort((a, b) => remaining(b) - remaining(a)).slice(0, 3);
+  els.knowledgeSummary.innerHTML = `
+    <div class="knowledge-block"><strong>企业知识</strong>${Object.keys(byCompany).map(company => `${company}：${byCompany[company].length} 条需求`).join("<br>")}</div>
+    <div class="knowledge-block"><strong>用工类型</strong>${Object.keys(byType).map(type => `${type}：${byType[type].length} 条`).join("<br>")}</div>
+    <div class="knowledge-block"><strong>重点缺口</strong>${highGap.map(item => `${item.company}${item.role} 缺 ${remaining(item)} 人`).join("<br>")}</div>
+    <div class="knowledge-block"><strong>求职者标签</strong>${topTags().map(([name, count]) => `${name}：${count} 人`).join("<br>")}</div>
+  `;
+}
+
+function renderChat() {
+  els.chatLog.innerHTML = data.chat.map(item => `<div class="bubble ${item.role === "user" ? "user" : ""}">${escapeHtml(item.text)}</div>`).join("");
+  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+
+function groupBy(items, key) {
+  return items.reduce((acc, item) => {
+    acc[item[key]] ||= [];
+    acc[item[key]].push(item);
+    return acc;
+  }, {});
+}
+
+function topTags() {
+  const counts = {};
+  data.workers.flatMap(worker => worker.tags).forEach(item => {
+    counts[item] = (counts[item] || 0) + 1;
+  });
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6);
+}
+
+function rankWorkers(demand) {
+  return data.workers.map(worker => {
+    let score = Math.round(Number(worker.score || 70) * 0.45);
+    const reasons = [];
+    const demandText = `${demand.company} ${demand.role} ${demand.type} ${demand.location} ${demand.notes}`.toLowerCase();
+    const workerText = `${worker.location} ${worker.available} ${worker.period} ${worker.tags.join(" ")}`.toLowerCase();
+
+    if (demandText.includes(worker.location.toLowerCase()) || workerText.includes(demand.location.slice(0, 2).toLowerCase())) {
+      score += 14;
+      reasons.push("地区接近");
+    }
+    if (worker.tags.some(item => demandText.includes(item.slice(0, 2).toLowerCase()))) {
+      score += 16;
+      reasons.push("岗位经验匹配");
+    }
+    if (demand.type.includes("短期") && (worker.period.includes("暑假") || worker.period.includes("7-15") || worker.tags.includes("短期工"))) {
+      score += 14;
+      reasons.push("可做短期");
+    }
+    if (demand.type.includes("长期") && worker.period.includes("长期")) {
+      score += 14;
+      reasons.push("适合长期稳定");
+    }
+    if (demand.notes.includes("夜班") && worker.tags.some(item => item.includes("夜班"))) {
+      score += 12;
+      reasons.push("接受夜班");
+    }
+    if (demand.notes.includes("住宿") && worker.tags.some(item => item.includes("住宿"))) {
+      score += 8;
+      reasons.push("住宿需求一致");
+    }
+    for (const keyword of ["包装", "分拣", "质检", "注塑", "物流", "抛光", "坐班"]) {
+      if ((demand.role + demand.notes).includes(keyword) && worker.tags.some(item => item.includes(keyword))) {
+        score += 10;
+        reasons.push(`${keyword}匹配`);
+        break;
+      }
+    }
+
+    return { worker, score: Math.min(score, 100), reasons };
+  }).sort((a, b) => b.score - a.score);
+}
+
+function bestDemandFor(worker) {
+  const ranked = data.demands.map(demand => {
+    const found = rankWorkers(demand).find(item => item.worker.id === worker.id);
+    return { demand, score: found.score, reasons: found.reasons };
+  }).sort((a, b) => b.score - a.score);
+  return ranked[0];
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#039;"
+  }[char]));
+}
+
+function formDataToDemand(formData) {
+  return {
+    company: formData.get("company").trim(),
+    role: formData.get("role").trim(),
+    type: formData.get("type"),
+    location: formData.get("location").trim(),
+    start: formData.get("start"),
+    end: formData.get("end"),
+    headcount: Number(formData.get("headcount")),
+    signed: Number(formData.get("signed")),
+    salary: formData.get("salary").trim(),
+    age: formData.get("age").trim(),
+    notes: formData.get("notes").trim()
+  };
+}
+
+function formDataToWorker(formData) {
+  return {
+    name: formData.get("name").trim(),
+    location: formData.get("location").trim(),
+    available: formData.get("available").trim(),
+    period: formData.get("period"),
+    salary: formData.get("salary").trim(),
+    score: Number(formData.get("score")),
+    tags: formData.get("tags").split(/[,，]/).map(item => item.trim()).filter(Boolean)
+  };
+}
+
+document.querySelectorAll(".nav-item").forEach(button => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach(item => item.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(item => item.classList.remove("active"));
+    button.classList.add("active");
+    document.querySelector(`#${button.dataset.view}`).classList.add("active");
+    els.pageTitle.textContent = button.textContent;
+  });
+});
+
+document.querySelectorAll("[data-open-modal]").forEach(button => {
+  button.addEventListener("click", () => {
+    document.querySelector(`#${button.dataset.openModal}`).showModal();
+  });
+});
+
+document.querySelectorAll("[data-close-modal]").forEach(button => {
+  button.addEventListener("click", () => {
+    document.querySelector(`#${button.dataset.closeModal}`).close();
+  });
+});
+
+document.querySelector("#demandForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const payload = await api("/api/demands", {
+    method: "POST",
+    body: JSON.stringify(formDataToDemand(new FormData(event.currentTarget)))
+  });
+  data = payload.data;
+  event.currentTarget.reset();
+  document.querySelector("#demandModal").close();
+  renderAll();
+});
+
+document.querySelector("#workerForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const payload = await api("/api/workers", {
+    method: "POST",
+    body: JSON.stringify(formDataToWorker(new FormData(event.currentTarget)))
+  });
+  data = payload.data;
+  event.currentTarget.reset();
+  document.querySelector("#workerModal").close();
+  renderAll();
+});
+
+els.yearSelect.addEventListener("change", renderCalendar);
+els.companyFilter.addEventListener("change", renderCalendar);
+els.typeFilter.addEventListener("change", renderCalendar);
+els.demandSearch.addEventListener("input", renderDemandTable);
+els.workerSearch.addEventListener("input", renderWorkers);
+
+els.chatForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const question = els.chatInput.value.trim();
+  if (!question) return;
+  els.chatInput.value = "";
+  const payload = await api("/api/chat", {
+    method: "POST",
+    body: JSON.stringify({ question })
+  });
+  data = payload.data;
+  renderAll();
+});
+
+document.querySelectorAll("[data-question]").forEach(button => {
+  button.addEventListener("click", () => {
+    els.chatInput.value = button.dataset.question;
+    els.chatForm.requestSubmit();
+  });
+});
+
+document.querySelector("#resetDemo").addEventListener("click", async () => {
+  const payload = await api("/api/reset", { method: "POST", body: "{}" });
+  data = payload.data;
+  renderAll();
+});
+
+loadData().catch(error => {
+  els.sideSummary.textContent = "后台服务未连接，请先启动 server.py。";
+  els.metrics.innerHTML = `<article class="metric"><span>系统状态</span><strong>未连接</strong></article>`;
+  els.chatLog.innerHTML = `<div class="bubble">后台服务未启动或接口异常：${escapeHtml(error.message)}</div>`;
+});

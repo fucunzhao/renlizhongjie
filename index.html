@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>劳务中介智能客户服务系统 MVP</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">劳</span>
+      <div>
+        <strong>劳务智能中台</strong>
+        <small>MVP 工作台</small>
+      </div>
+    </div>
+    <nav class="nav" aria-label="主导航">
+      <button class="nav-item active" data-view="dashboard">总览</button>
+      <button class="nav-item" data-view="calendar">全年用工日历</button>
+      <button class="nav-item" data-view="demands">企业需求</button>
+      <button class="nav-item" data-view="workers">求职者库</button>
+      <button class="nav-item" data-view="assistant">AI 知识库助手</button>
+    </nav>
+    <div class="side-note">
+      <strong>今日重点</strong>
+      <p id="sideSummary">正在整理业务数据...</p>
+    </div>
+  </aside>
+
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">企业用工需求 × 求职者数据库 × AI 本地知识库</p>
+        <h1 id="pageTitle">业务总览</h1>
+      </div>
+      <div class="top-actions">
+        <button class="ghost" id="resetDemo">恢复示例数据</button>
+        <button class="primary" data-open-modal="demandModal">新增用工需求</button>
+      </div>
+    </header>
+
+    <section class="view active" id="dashboard">
+      <div class="metrics" id="metrics"></div>
+      <div class="layout two-col">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>紧急缺口</h2>
+            <span>按开始日期和缺口排序</span>
+          </div>
+          <div id="urgentList" class="list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>推荐任务</h2>
+            <span>系统自动生成</span>
+          </div>
+          <div id="taskList" class="list"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="view" id="calendar">
+      <div class="toolbar">
+        <label>
+          年份
+          <select id="yearSelect"></select>
+        </label>
+        <label>
+          企业
+          <select id="companyFilter"></select>
+        </label>
+        <label>
+          用工类型
+          <select id="typeFilter">
+            <option value="all">全部</option>
+            <option value="长期工">长期工</option>
+            <option value="短期工">短期工</option>
+            <option value="日结工">日结工</option>
+            <option value="季节工">季节工</option>
+          </select>
+        </label>
+      </div>
+      <div class="calendar-grid" id="calendarGrid"></div>
+    </section>
+
+    <section class="view" id="demands">
+      <div class="toolbar split">
+        <input id="demandSearch" type="search" placeholder="搜索企业、岗位、地点">
+        <button class="primary" data-open-modal="demandModal">新增用工需求</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>企业</th>
+              <th>岗位</th>
+              <th>时间</th>
+              <th>人数</th>
+              <th>缺口</th>
+              <th>薪资</th>
+              <th>状态</th>
+              <th>推荐</th>
+            </tr>
+          </thead>
+          <tbody id="demandTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="workers">
+      <div class="toolbar split">
+        <input id="workerSearch" type="search" placeholder="搜索姓名、标签、地区">
+        <button class="primary" data-open-modal="workerModal">新增求职者</button>
+      </div>
+      <div class="worker-grid" id="workerGrid"></div>
+    </section>
+
+    <section class="view" id="assistant">
+      <div class="assistant-layout">
+        <section class="panel chat-panel">
+          <div class="panel-head">
+            <h2>AI 本地知识库助手</h2>
+            <span>原型版：基于本地业务数据回答</span>
+          </div>
+          <div class="quick-prompts">
+            <button data-question="下个月有哪些企业缺短期工？">下个月短期工</button>
+            <button data-question="哪些岗位适合暑假工？">暑假工岗位</button>
+            <button data-question="哪些求职者适合夜班岗位？">夜班人选</button>
+            <button data-question="帮我生成一段招聘文案">招聘文案</button>
+          </div>
+          <div class="chat-log" id="chatLog"></div>
+          <form class="chat-form" id="chatForm">
+            <input id="chatInput" autocomplete="off" placeholder="例如：张三适合推荐到哪个企业？">
+            <button class="primary" type="submit">询问</button>
+          </form>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>知识库摘要</h2>
+            <span>自动从业务数据生成</span>
+          </div>
+          <div id="knowledgeSummary" class="knowledge"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="demandModal">
+    <form method="dialog" class="modal-card" id="demandForm">
+      <header>
+        <h2>新增企业用工需求</h2>
+        <button type="button" data-close-modal="demandModal" class="icon-btn" aria-label="关闭">×</button>
+      </header>
+      <div class="form-grid">
+        <label>企业名称<input name="company" required placeholder="如：华东电子厂"></label>
+        <label>岗位名称<input name="role" required placeholder="如：包装工"></label>
+        <label>用工类型<select name="type"><option>长期工</option><option>短期工</option><option>日结工</option><option>季节工</option></select></label>
+        <label>工作地点<input name="location" required placeholder="如：苏州昆山"></label>
+        <label>开始日期<input name="start" type="date" required></label>
+        <label>结束日期<input name="end" type="date"></label>
+        <label>需求人数<input name="headcount" type="number" min="1" required value="20"></label>
+        <label>已报名<input name="signed" type="number" min="0" value="0"></label>
+        <label>薪资<input name="salary" required placeholder="如：22元/小时"></label>
+        <label>年龄要求<input name="age" placeholder="如：18-45岁"></label>
+      </div>
+      <label>岗位要求与备注<textarea name="notes" placeholder="夜班、住宿、体检、集合地点等"></textarea></label>
+      <footer>
+        <button type="button" data-close-modal="demandModal" class="ghost">取消</button>
+        <button class="primary" value="default">保存需求</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="workerModal">
+    <form method="dialog" class="modal-card" id="workerForm">
+      <header>
+        <h2>新增求职者</h2>
+        <button type="button" data-close-modal="workerModal" class="icon-btn" aria-label="关闭">×</button>
+      </header>
+      <div class="form-grid">
+        <label>姓名<input name="name" required></label>
+        <label>所在地区<input name="location" required></label>
+        <label>可到岗时间<input name="available" required placeholder="如：现在可到岗"></label>
+        <label>期望周期<select name="period"><option>长期稳定</option><option>1-3个月</option><option>7-15天</option><option>暑假工</option><option>周末兼职</option></select></label>
+        <label>期望薪资<input name="salary" placeholder="如：6000以上"></label>
+        <label>稳定性评分<input name="score" type="number" min="0" max="100" value="80"></label>
+      </div>
+      <label>技能/偏好标签<textarea name="tags" placeholder="用逗号分隔，如：电子厂经验, 接受夜班, 需要住宿"></textarea></label>
+      <footer>
+        <button type="button" data-close-modal="workerModal" class="ghost">取消</button>
+        <button class="primary" value="default">保存求职者</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
