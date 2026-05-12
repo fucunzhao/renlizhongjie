@@ -53,6 +53,18 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function uploadApi(path, formData) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: account?.token ? { Authorization: `Bearer ${account.token}` } : {},
+    body: formData
+  });
+  const contentType = response.headers.get("Content-Type") || "";
+  const payload = contentType.includes("application/json") ? await response.json() : { error: await response.text() };
+  if (!response.ok) throw new Error(payload.error || "上传失败");
+  return payload;
+}
+
 async function loadData() {
   const payload = await api("/api/data");
   if (payload.account) {
@@ -537,8 +549,9 @@ els.knowledgeSearch.addEventListener("input", renderKnowledgeBase);
 
 document.querySelector("#parseFuzzy").addEventListener("click", async () => {
   const text = els.fuzzyText.value.trim();
-  if (!text) {
-    setFuzzyStatus("请先粘贴招聘文字，或上传文本文件后再识别。", true);
+  const file = els.fuzzyFile.files?.[0];
+  if (!text && !file) {
+    setFuzzyStatus("请先粘贴文字，或上传 xlsx/docx/csv/txt 等文件后再识别。", true);
     return;
   }
   const button = document.querySelector("#parseFuzzy");
@@ -546,10 +559,19 @@ document.querySelector("#parseFuzzy").addEventListener("click", async () => {
   button.textContent = "识别中...";
   setFuzzyStatus("正在识别，请稍等。");
   try {
-    const payload = await api("/api/fuzzy/parse", {
-      method: "POST",
-    body: JSON.stringify({ text, kind: fuzzyKind })
-    });
+    let payload;
+    if (file) {
+      const formData = new FormData();
+      formData.append("kind", fuzzyKind);
+      formData.append("file", file);
+      payload = await uploadApi("/api/fuzzy/file", formData);
+      if (payload.text) els.fuzzyText.value = payload.text;
+    } else {
+      payload = await api("/api/fuzzy/parse", {
+        method: "POST",
+        body: JSON.stringify({ text, kind: fuzzyKind })
+      });
+    }
     fuzzyItems = payload.items || [];
     renderFuzzyResults();
     setFuzzyStatus(fuzzyItems.length ? `识别完成，共 ${fuzzyItems.length} 条，请检查后导入。` : "没有识别到可导入的企业需求。", !fuzzyItems.length);
@@ -600,7 +622,13 @@ document.querySelector("#clearFuzzy").addEventListener("click", () => {
 els.fuzzyFile.addEventListener("change", async event => {
   const file = event.target.files?.[0];
   if (!file) return;
-  els.fuzzyText.value = await file.text();
+  const name = file.name.toLowerCase();
+  if (/\.(txt|md|csv|json)$/.test(name)) {
+    els.fuzzyText.value = await file.text();
+    setFuzzyStatus("文本文件已读取，可点击自动识别。");
+  } else {
+    setFuzzyStatus("文件已选择，将在点击自动识别时由后台解析。");
+  }
 });
 
 document.querySelectorAll("[data-fuzzy-kind]").forEach(button => {

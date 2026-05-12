@@ -4,9 +4,11 @@ import os
 import re
 import secrets
 import sqlite3
+import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+from xml.etree import ElementTree
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -703,6 +705,81 @@ def parse_fuzzy_workers(text):
     return items
 
 
+def decode_text_bytes(raw):
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
+def strip_xml_text(xml_bytes):
+    root = ElementTree.fromstring(xml_bytes)
+    return "".join(root.itertext())
+
+
+def extract_docx_text(raw):
+    with zipfile.ZipFile(io_bytes(raw)) as archive:
+        names = [name for name in archive.namelist() if name.startswith("word/") and name.endswith(".xml")]
+        texts = []
+        for name in names:
+            if name == "word/document.xml" or name.startswith("word/header") or name.startswith("word/footer"):
+                texts.append(strip_xml_text(archive.read(name)))
+        return "\n".join(texts)
+
+
+def io_bytes(raw):
+    import io
+    return io.BytesIO(raw)
+
+
+def extract_xlsx_text(raw):
+    with zipfile.ZipFile(io_bytes(raw)) as archive:
+        shared_strings = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+            for si in root.findall("x:si", ns):
+                shared_strings.append("".join(si.itertext()))
+
+        sheet_names = sorted(name for name in archive.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", name))
+        rows = []
+        ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        for sheet in sheet_names:
+            root = ElementTree.fromstring(archive.read(sheet))
+            for row in root.findall(".//x:row", ns):
+                cells = []
+                for cell in row.findall("x:c", ns):
+                    value_node = cell.find("x:v", ns)
+                    inline_node = cell.find("x:is", ns)
+                    value = ""
+                    if inline_node is not None:
+                        value = "".join(inline_node.itertext())
+                    elif value_node is not None:
+                        value = value_node.text or ""
+                        if cell.attrib.get("t") == "s" and value.isdigit():
+                            index = int(value)
+                            value = shared_strings[index] if index < len(shared_strings) else value
+                    cells.append(value.strip())
+                if any(cells):
+                    rows.append(" | ".join(cells))
+        return "\n".join(rows)
+
+
+def extract_uploaded_text(filename, raw):
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in {".txt", ".md", ".csv", ".json"}:
+        return decode_text_bytes(raw)
+    if suffix == ".docx":
+        return extract_docx_text(raw)
+    if suffix == ".xlsx":
+        return extract_xlsx_text(raw)
+    if suffix == ".xls":
+        raise ValueError("暂不支持旧版 .xls，请先另存为 .xlsx 后上传。")
+    raise ValueError("暂不支持该文件格式，请上传 .xlsx、.docx、.csv、.txt、.md 或 .json。")
+
+
 def insert_demand(conn, body, account=None):
     account_id = int(account["id"]) if account else int(body.get("accountId") or 0)
     cursor = conn.execute(
@@ -882,6 +959,24 @@ class Handler(SimpleHTTPRequestHandler):
             items = parse_fuzzy_workers(text) if kind == "worker" else parse_fuzzy_demands(text)
             self.send_json({"ok": True, "items": items})
             return
+        if parsed.path == "/api/fuzzy/file":
+            try:
+                form = self.read_multipart()
+                kind = form.get("kind", "demand")
+                filename = form.get("filename", "")
+                raw = form.get("file", b"")
+                if not raw:
+                    self.send_json({"ok": False, "error": "没有收到文件"}, status=400)
+                    return
+                text = extract_uploaded_text(filename, raw)
+                if not text.strip():
+                    self.send_json({"ok": False, "error": "文件内容为空或无法提取文字"}, status=400)
+                    return
+                items = parse_fuzzy_workers(text) if kind == "worker" else parse_fuzzy_demands(text)
+                self.send_json({"ok": True, "items": items, "text": text[:20000], "filename": filename})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
         if parsed.path == "/api/fuzzy/import":
             body = self.read_json()
             items = body.get("items", [])
@@ -932,6 +1027,36 @@ class Handler(SimpleHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or 0)
         raw = self.rfile.read(length).decode("utf-8") if length else "{}"
         return json.loads(raw or "{}")
+
+    def read_multipart(self):
+        content_type = self.headers.get("Content-Type", "")
+        match = re.search(r"boundary=(.+)", content_type)
+        if not match:
+            raise ValueError("上传格式不正确")
+        boundary = ("--" + match.group(1).strip('"')).encode("utf-8")
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        body = self.rfile.read(length)
+        result = {}
+        for part in body.split(boundary):
+            part = part.strip()
+            if not part or part == b"--":
+                continue
+            if part.endswith(b"--"):
+                part = part[:-2].strip()
+            header_blob, _, content = part.partition(b"\r\n\r\n")
+            headers = decode_text_bytes(header_blob)
+            content = content.rstrip(b"\r\n")
+            name_match = re.search(r'name="([^"]+)"', headers)
+            if not name_match:
+                continue
+            name = name_match.group(1)
+            filename_match = re.search(r'filename="([^"]*)"', headers)
+            if filename_match:
+                result["filename"] = filename_match.group(1)
+                result[name] = content
+            else:
+                result[name] = decode_text_bytes(content).strip()
+        return result
 
     def send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
