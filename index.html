@@ -20,6 +20,7 @@
       <button class="nav-item" data-view="calendar">全年用工日历</button>
       <button class="nav-item" data-view="demands">企业需求</button>
       <button class="nav-item" data-view="workers">求职者库</button>
+      <button class="nav-item" data-view="knowledge">私有知识库</button>
       <button class="nav-item" data-view="assistant">AI 知识库助手</button>
     </nav>
     <div class="side-note">
@@ -115,6 +116,30 @@
         <button class="primary" data-open-modal="workerModal">新增求职者</button>
       </div>
       <div class="worker-grid" id="workerGrid"></div>
+    </section>
+
+    <section class="view" id="knowledge">
+      <div class="toolbar split">
+        <input id="knowledgeSearch" type="search" placeholder="搜索企业规则、岗位、求职者画像、标签">
+        <button class="ghost" id="rebuildKnowledge">重建知识库索引</button>
+      </div>
+      <div class="metrics" id="knowledgeMetrics"></div>
+      <div class="layout two-col">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>知识条目</h2>
+            <span>由企业需求、求职者登记、业务维护自动沉淀</span>
+          </div>
+          <div id="knowledgeList" class="list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>半智能洞察</h2>
+            <span>不用大模型，基于规则自动生成</span>
+          </div>
+          <div id="insightList" class="knowledge"></div>
+        </section>
+      </div>
     </section>
 
     <section class="view" id="assistant">

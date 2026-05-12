@@ -268,9 +268,23 @@ def init_db():
                 text TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                source TEXT DEFAULT '',
+                entity_type TEXT DEFAULT '',
+                entity_id INTEGER DEFAULT 0,
+                tags TEXT DEFAULT '',
+                confidence INTEGER NOT NULL DEFAULT 80,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         ensure_worker_columns(conn)
+        ensure_knowledge_columns(conn)
         demand_count = conn.execute("SELECT COUNT(*) FROM demands").fetchone()[0]
         if demand_count == 0:
             conn.executemany(
@@ -300,6 +314,7 @@ def init_db():
                     "你好，我会根据本地企业需求、全年排期和求职者档案回答问题。可以问我：下个月有哪些缺口、某个求职者适合去哪、或者帮你生成招聘文案。",
                 ),
             )
+        sync_knowledge_entries(conn)
 
 
 def ensure_worker_columns(conn):
@@ -315,6 +330,21 @@ def ensure_worker_columns(conn):
     for name, definition in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE workers ADD COLUMN {name} {definition}")
+
+
+def ensure_knowledge_columns(conn):
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(knowledge_entries)")}
+    columns = {
+        "source": "TEXT DEFAULT ''",
+        "entity_type": "TEXT DEFAULT ''",
+        "entity_id": "INTEGER DEFAULT 0",
+        "tags": "TEXT DEFAULT ''",
+        "confidence": "INTEGER NOT NULL DEFAULT 80",
+        "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+    }
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE knowledge_entries ADD COLUMN {name} {definition}")
 
 
 def row_to_demand(row):
@@ -353,12 +383,143 @@ def row_to_worker(row):
     }
 
 
+def row_to_knowledge(row):
+    return {
+        "id": row["id"],
+        "category": row["category"],
+        "title": row["title"],
+        "summary": row["summary"],
+        "source": row["source"],
+        "entityType": row["entity_type"],
+        "entityId": row["entity_id"],
+        "tags": [item.strip() for item in (row["tags"] or "").replace("，", ",").split(",") if item.strip()],
+        "confidence": row["confidence"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def upsert_knowledge_entry(conn, category, title, summary, source, entity_type, entity_id, tags, confidence=80):
+    tags_text = ", ".join(tags) if isinstance(tags, list) else str(tags or "")
+    existing = conn.execute(
+        "SELECT id FROM knowledge_entries WHERE entity_type = ? AND entity_id = ? AND category = ?",
+        (entity_type, entity_id, category),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            """
+            UPDATE knowledge_entries
+            SET title = ?, summary = ?, source = ?, tags = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (title, summary, source, tags_text, confidence, existing["id"]),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO knowledge_entries
+            (category, title, summary, source, entity_type, entity_id, tags, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (category, title, summary, source, entity_type, entity_id, tags_text, confidence),
+        )
+
+
+def demand_knowledge(row):
+    demand = row_to_demand(row)
+    tags = [
+        demand["type"],
+        demand["location"],
+        demand["role"],
+        "周结" if "周结" in demand["notes"] else "",
+        "不用体检" if "不用体检" in demand["notes"] else "",
+        "夜班" if "夜班" in demand["notes"] or "两班倒" in demand["notes"] else "",
+        "住宿" if "住宿" in demand["notes"] or "宿舍" in demand["notes"] else "",
+    ]
+    tags = [item for item in tags if item]
+    summary = (
+        f"{demand['company']}招聘{demand['role']}，{demand['type']}，地点{demand['location']}，"
+        f"需求{demand['headcount']}人，已报名{demand['signed']}人，薪资{demand['salary']}，"
+        f"年龄要求{demand['age'] or '未填写'}。关键规则：{demand['notes']}"
+    )
+    return {
+        "category": "企业岗位规则",
+        "title": f"{demand['company']}｜{demand['role']}",
+        "summary": summary,
+        "source": "企业需求维护",
+        "entity_type": "demand",
+        "entity_id": demand["id"],
+        "tags": tags,
+        "confidence": 90,
+    }
+
+
+def worker_knowledge(row):
+    worker = row_to_worker(row)
+    tags = worker["tags"] + [worker["location"], worker["period"], worker["expectedRole"], worker["source"]]
+    tags = [item for item in tags if item]
+    summary = (
+        f"{worker['name']}，{worker.get('gender') or '性别未填'}，{worker.get('age') or '年龄未填'}岁，"
+        f"电话{worker.get('phone') or '未填'}，当前地区{worker['location']}，{worker['available']}，"
+        f"期望周期{worker['period']}，期望岗位{worker['expectedRole'] or '未填'}，期望薪资{worker['salary'] or '未填'}。"
+        f"备注：{worker['note'] or '无'}"
+    )
+    return {
+        "category": "求职者画像",
+        "title": f"{worker['name']}｜{worker['location']}｜{worker['period']}",
+        "summary": summary,
+        "source": worker["source"] or "求职者维护",
+        "entity_type": "worker",
+        "entity_id": worker["id"],
+        "tags": tags,
+        "confidence": 82,
+    }
+
+
+def sync_knowledge_entries(conn):
+    for row in conn.execute("SELECT * FROM demands"):
+        item = demand_knowledge(row)
+        upsert_knowledge_entry(conn, **item)
+    for row in conn.execute("SELECT * FROM workers"):
+        item = worker_knowledge(row)
+        upsert_knowledge_entry(conn, **item)
+
+
+def build_insights(demands, workers):
+    total_gap = sum(max(int(item["headcount"]) - int(item.get("signed") or 0), 0) for item in demands)
+    high_gap = sorted(demands, key=lambda item: max(int(item["headcount"]) - int(item.get("signed") or 0), 0), reverse=True)[:5]
+    weekly = [item for item in demands if "周结" in item["notes"]]
+    no_exam = [item for item in demands if "不用体检" in item["notes"] or "不体检" in item["notes"]]
+    night = [worker for worker in workers if any("夜班" in tag for tag in worker["tags"])]
+    self_registered = [worker for worker in workers if worker.get("source") == "求职者自助登记"]
+    return {
+        "totalGap": total_gap,
+        "highGap": [
+            {
+                "title": f"{item['company']} {item['role']}",
+                "value": max(int(item["headcount"]) - int(item.get("signed") or 0), 0),
+                "note": item["salary"],
+            }
+            for item in high_gap
+        ],
+        "weeklyJobs": [{"title": f"{item['company']} {item['role']}", "note": item["salary"]} for item in weekly[:8]],
+        "noExamJobs": [{"title": f"{item['company']} {item['role']}", "note": item["age"]} for item in no_exam[:8]],
+        "nightWorkers": [{"title": worker["name"], "note": "、".join(worker["tags"])} for worker in night[:8]],
+        "selfRegisteredCount": len(self_registered),
+    }
+
+
 def get_payload():
     with connect() as conn:
+        sync_knowledge_entries(conn)
         demands = [row_to_demand(row) for row in conn.execute("SELECT * FROM demands ORDER BY start_date, id")]
         workers = [row_to_worker(row) for row in conn.execute("SELECT * FROM workers ORDER BY id DESC")]
         chat = [dict(row) for row in conn.execute("SELECT role, text FROM chat_messages ORDER BY id")]
-    return {"demands": demands, "workers": workers, "chat": chat}
+        knowledge = [
+            row_to_knowledge(row)
+            for row in conn.execute("SELECT * FROM knowledge_entries ORDER BY updated_at DESC, id DESC")
+        ]
+    return {"demands": demands, "workers": workers, "chat": chat, "knowledge": knowledge, "insights": build_insights(demands, workers)}
 
 
 def reset_seed_data():
@@ -366,6 +527,7 @@ def reset_seed_data():
         conn.execute("DELETE FROM chat_messages")
         conn.execute("DELETE FROM workers")
         conn.execute("DELETE FROM demands")
+        conn.execute("DELETE FROM knowledge_entries")
         conn.executemany(
             """
             INSERT INTO demands
@@ -389,6 +551,7 @@ def reset_seed_data():
                 "已恢复乐颜提供的企业用工数据和演示求职者库，可以继续查询和推荐。",
             ),
         )
+        sync_knowledge_entries(conn)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -479,6 +642,12 @@ class Handler(SimpleHTTPRequestHandler):
             reset_seed_data()
             self.send_json({"ok": True, "data": get_payload()})
             return
+        if parsed.path == "/api/knowledge/rebuild":
+            with connect() as conn:
+                conn.execute("DELETE FROM knowledge_entries")
+                sync_knowledge_entries(conn)
+            self.send_json({"ok": True, "data": get_payload()})
+            return
         self.send_json({"ok": False, "error": "接口不存在"}, status=404)
 
     def read_json(self):
@@ -537,6 +706,19 @@ def answer_question(question, payload):
     q = question.lower()
     demands = payload["demands"]
     workers = payload["workers"]
+    knowledge = payload.get("knowledge", [])
+    if "知识库" in q:
+        categories = {}
+        for item in knowledge:
+            categories[item["category"]] = categories.get(item["category"], 0) + 1
+        detail = "、".join(f"{name}{count}条" for name, count in categories.items())
+        return f"当前私有知识库共有 {len(knowledge)} 条知识，包含：{detail or '暂无分类'}。知识来源包括企业需求维护、求职者自助登记和业务员录入。"
+    if "周结" in q:
+        items = [item for item in demands if "周结" in item["notes"]]
+        return format_demand_answer("支持周结的岗位", items, workers)
+    if "不用体检" in q or "不体检" in q:
+        items = [item for item in demands if "不用体检" in item["notes"] or "不体检" in item["notes"]]
+        return format_demand_answer("不用体检或暂不体检的岗位", items, workers)
     if "短期" in q or "下个月" in q:
         items = [item for item in demands if "短期" in item["type"]]
         return format_demand_answer("短期工相关需求", items, workers)

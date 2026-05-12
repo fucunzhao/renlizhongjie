@@ -21,6 +21,10 @@ const els = {
   demandTable: document.querySelector("#demandTable"),
   workerSearch: document.querySelector("#workerSearch"),
   workerGrid: document.querySelector("#workerGrid"),
+  knowledgeSearch: document.querySelector("#knowledgeSearch"),
+  knowledgeMetrics: document.querySelector("#knowledgeMetrics"),
+  knowledgeList: document.querySelector("#knowledgeList"),
+  insightList: document.querySelector("#insightList"),
   knowledgeSummary: document.querySelector("#knowledgeSummary"),
   chatLog: document.querySelector("#chatLog"),
   chatForm: document.querySelector("#chatForm"),
@@ -72,6 +76,7 @@ function renderAll() {
   renderCalendar();
   renderDemandTable();
   renderWorkers();
+  renderKnowledgeBase();
   renderKnowledge();
   renderChat();
 }
@@ -221,6 +226,45 @@ function renderKnowledge() {
     <div class="knowledge-block"><strong>重点缺口</strong>${highGap.map(item => `${item.company}${item.role} 缺 ${remaining(item)} 人`).join("<br>")}</div>
     <div class="knowledge-block"><strong>求职者标签</strong>${topTags().map(([name, count]) => `${name}：${count} 人`).join("<br>")}</div>
   `;
+}
+
+function renderKnowledgeBase() {
+  const knowledge = data.knowledge || [];
+  const insights = data.insights || {};
+  const keyword = els.knowledgeSearch?.value.trim().toLowerCase() || "";
+  const filtered = knowledge.filter(item => {
+    const text = `${item.category} ${item.title} ${item.summary} ${item.source} ${item.tags.join(" ")}`.toLowerCase();
+    return text.includes(keyword);
+  });
+  const categories = new Set(knowledge.map(item => item.category)).size;
+  els.knowledgeMetrics.innerHTML = [
+    ["知识条目", `${knowledge.length} 条`],
+    ["知识分类", `${categories} 类`],
+    ["自动登记", `${insights.selfRegisteredCount || 0} 人`],
+    ["当前总缺口", `${insights.totalGap || 0} 人`]
+  ].map(([label, value]) => `<article class="metric"><span>${label}</span><strong>${value}</strong></article>`).join("");
+
+  els.knowledgeList.innerHTML = filtered.map(item => `
+    <article class="item">
+      <div class="item-top"><strong>${item.title}</strong>${tag(item.category)}</div>
+      <p>${item.summary}</p>
+      <div class="tags">${item.tags.slice(0, 8).map(tagName => tag(tagName)).join("")}</div>
+      <div class="item-meta"><span>来源：${item.source || "系统沉淀"}</span><span>可信度：${item.confidence}%</span></div>
+    </article>
+  `).join("") || `<p class="item-meta">暂无匹配的知识条目</p>`;
+
+  const block = (title, items, emptyText) => `
+    <div class="knowledge-block">
+      <strong>${title}</strong>
+      ${items?.length ? items.map(item => `${item.title}${item.value ? `：${item.value}人` : ""}<br><span class="item-meta">${item.note || ""}</span>`).join("<br>") : emptyText}
+    </div>
+  `;
+  els.insightList.innerHTML = [
+    block("重点缺口岗位", insights.highGap, "暂无缺口数据"),
+    block("可周结岗位", insights.weeklyJobs, "暂无周结岗位"),
+    block("不用体检岗位", insights.noExamJobs, "暂无不用体检岗位"),
+    block("可接受夜班人选", insights.nightWorkers, "暂无夜班标签人选")
+  ].join("");
 }
 
 function renderChat() {
@@ -390,6 +434,7 @@ els.companyFilter.addEventListener("change", renderCalendar);
 els.typeFilter.addEventListener("change", renderCalendar);
 els.demandSearch.addEventListener("input", renderDemandTable);
 els.workerSearch.addEventListener("input", renderWorkers);
+els.knowledgeSearch.addEventListener("input", renderKnowledgeBase);
 
 els.chatForm.addEventListener("submit", async event => {
   event.preventDefault();
@@ -413,6 +458,12 @@ document.querySelectorAll("[data-question]").forEach(button => {
 
 document.querySelector("#resetDemo").addEventListener("click", async () => {
   const payload = await api("/api/reset", { method: "POST", body: "{}" });
+  data = payload.data;
+  renderAll();
+});
+
+document.querySelector("#rebuildKnowledge").addEventListener("click", async () => {
+  const payload = await api("/api/knowledge/rebuild", { method: "POST", body: "{}" });
   data = payload.data;
   renderAll();
 });
