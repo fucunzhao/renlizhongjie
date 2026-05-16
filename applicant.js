@@ -50,4 +50,30 @@ function toApplicantPayload(formData) {
   };
 }
 
-form.addEventList
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!agencyKey) {
+    successBox.textContent = "请通过业务员发送的专属登记链接打开本页面。";
+    successBox.classList.add("show");
+    return;
+  }
+  const submitButton = form.querySelector("button[type='submit']");
+  submitButton.disabled = true;
+  submitButton.textContent = "提交中...";
+  successBox.classList.remove("show");
+  try {
+    await api("/api/applicant/register", {
+      method: "POST",
+      body: JSON.stringify(toApplicantPayload(new FormData(form)))
+    });
+    form.reset();
+    successBox.textContent = "登记成功。业务员会在人才库里看到你的资料，并根据企业用工需求联系你。";
+    successBox.classList.add("show");
+  } catch (error) {
+    successBox.textContent = "提交失败：" + error.message;
+    successBox.classList.add("show");
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = "提交登记";
+  }
+});
