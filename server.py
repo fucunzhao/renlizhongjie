@@ -386,6 +386,10 @@ def init_db():
         ensure_table_columns(conn, "demands", {"company_key": "TEXT DEFAULT ''"})
         ensure_table_columns(conn, "workers", {"company_key": "TEXT DEFAULT ''"})
         ensure_table_columns(conn, "accounts", {"role": "TEXT DEFAULT 'owner'", "company_key": "TEXT DEFAULT ''"})
+        ensure_table_columns(conn, "chat_messages", {
+            "account_id": "INTEGER DEFAULT 0",
+            "company_key": "TEXT DEFAULT ''",
+        })
         ensure_worker_columns(conn)
         ensure_knowledge_columns(conn)
         demand_count = conn.execute("SELECT COUNT(*) FROM demands").fetchone()[0]
@@ -408,15 +412,7 @@ def init_db():
                 """,
                 WORKERS,
             )
-        chat_count = conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0]
-        if chat_count == 0:
-            conn.execute(
-                "INSERT INTO chat_messages (role, text) VALUES (?, ?)",
-                (
-                    "assistant",
-                    "你好，我会根据本地企业需求、全年排期和求职者档案回答问题。可以问我：下个月有哪些缺口、某个求职者适合去哪、或者帮你生成招聘文案。",
-                ),
-            )
+        # chat_messages 现按租户隔离，启动时不再写入全局欢迎语；新租户首次登录会自己得到欢迎语。
         sync_knowledge_entries(conn)
 
 
@@ -592,18 +588,30 @@ def worker_knowledge(row):
     }
 
 
-def sync_knowledge_entries(conn):
-    conn.execute(
-        """
-        UPDATE demands
-        SET company_key = lower(replace(company, ' ', ''))
-        WHERE (company_key IS NULL OR company_key = '') AND account_id = 0
-        """
-    )
-    for row in conn.execute("SELECT * FROM demands"):
+def sync_knowledge_entries(conn, company_key=None):
+    """同步业务表→知识库。传入 company_key 时只同步该租户，避免全表扫描和跨租户写。"""
+    if company_key is None:
+        # 仅在 init 阶段调用一次：把历史无 company_key 的种子数据做一次归一化
+        conn.execute(
+            """
+            UPDATE demands
+            SET company_key = lower(replace(company, ' ', ''))
+            WHERE (company_key IS NULL OR company_key = '') AND account_id = 0
+            """
+        )
+        demand_rows = conn.execute("SELECT * FROM demands").fetchall()
+        worker_rows = conn.execute("SELECT * FROM workers").fetchall()
+    else:
+        demand_rows = conn.execute(
+            "SELECT * FROM demands WHERE company_key = ?", (company_key,)
+        ).fetchall()
+        worker_rows = conn.execute(
+            "SELECT * FROM workers WHERE company_key = ?", (company_key,)
+        ).fetchall()
+    for row in demand_rows:
         item = demand_knowledge(row)
         upsert_knowledge_entry(conn, **item)
-    for row in conn.execute("SELECT * FROM workers"):
+    for row in worker_rows:
         item = worker_knowledge(row)
         upsert_knowledge_entry(conn, **item)
 
@@ -672,11 +680,18 @@ def delete_knowledge_entries(conn, ids, account):
         f"SELECT * FROM knowledge_entries WHERE id IN ({placeholders}) AND is_deleted = 0 {scope_sql}",
         (*clean_ids, *scope_values),
     ).fetchall()
+    tenant_key = account.get("companyKey", "")
     for row in rows:
         if row["entity_type"] == "demand" and row["entity_id"]:
-            conn.execute("DELETE FROM demands WHERE id = ?", (row["entity_id"],))
+            conn.execute(
+                "DELETE FROM demands WHERE id = ? AND company_key = ?",
+                (row["entity_id"], tenant_key),
+            )
         if row["entity_type"] == "worker" and row["entity_id"]:
-            conn.execute("DELETE FROM workers WHERE id = ?", (row["entity_id"],))
+            conn.execute(
+                "DELETE FROM workers WHERE id = ? AND company_key = ?",
+                (row["entity_id"], tenant_key),
+            )
     conn.execute(
         f"UPDATE knowledge_entries SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders}) {scope_sql}",
         (*clean_ids, *scope_values),
@@ -789,12 +804,48 @@ def public_demo_payload():
     }
 
 
-def hash_password(password):
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+PBKDF2_ITERATIONS = 200_000
+
+
+def hash_password(password, salt=None):
+    if salt is None:
+        salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ITERATIONS
+    ).hex()
+    return f"pbkdf2${PBKDF2_ITERATIONS}${salt}${digest}"
+
+
+def verify_password(password, stored):
+    if not stored:
+        return False
+    if "$" not in stored:
+        legacy = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        return secrets.compare_digest(legacy, stored)
+    parts = stored.split("$")
+    if len(parts) == 4 and parts[0] == "pbkdf2":
+        try:
+            iterations = int(parts[1])
+        except ValueError:
+            return False
+        salt = parts[2]
+        expected = parts[3]
+        actual = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations
+        ).hex()
+        return secrets.compare_digest(actual, expected)
+    return False
+
+
+ALLOWED_ROLES = {"owner", "sales", "dispatcher", "service"}
+_COMPANY_KEY_CHAR_RE = re.compile(r"[a-z0-9一-鿿_\-]")
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8MB 上传上限
 
 
 def normalize_company_key(company):
-    return re.sub(r"\s+", "", (company or "").strip()).lower()
+    raw = re.sub(r"\s+", "", (company or "").strip()).lower()
+    # 只保留中英文、数字、下划线、连字符，避免任何形式的注入或路径穿越
+    return "".join(ch for ch in raw if _COMPANY_KEY_CHAR_RE.match(ch))
 
 
 def account_public(row):
@@ -823,19 +874,27 @@ def get_account_from_headers(headers):
 
 
 def scoped_where(account, table_alias=""):
+    """返回 (sql_fragment, params) 二元组，使用占位符避免 SQL 注入。"""
     prefix = f"{table_alias}." if table_alias else ""
     if account and account.get("companyKey"):
-        return f"WHERE {prefix}company_key = '{account['companyKey']}'"
-    return ""
+        return f"WHERE {prefix}company_key = ?", [account["companyKey"]]
+    # 故意不让"无 companyKey"的账号读到任何业务数据；空 WHERE 会泄露全表
+    return "WHERE 1 = 0", []
 
 
 def require_login(account):
     if not account:
         raise PermissionError("请先登录账号后再操作。")
+    if not account.get("companyKey"):
+        raise PermissionError("当前账号未绑定企业，无法操作。")
 
 
 def can_write(account):
-    return bool(account and account.get("role") in {"owner", "sales", "dispatcher", "service"})
+    return bool(
+        account
+        and account.get("companyKey")
+        and account.get("role") in ALLOWED_ROLES
+    )
 
 
 def split_fuzzy_sections(text):
@@ -1079,10 +1138,8 @@ def insert_demand(conn, body, account=None):
     return cursor.lastrowid
 
 
-def insert_worker(conn, body, account=None):
-    require_login(account)
-    account_id = int(account["id"]) if account else int(body.get("accountId") or 0)
-    company_key = account.get("companyKey") or ""
+def _do_insert_worker(conn, body, account_id, company_key):
+    """实际写库的逻辑；不做登录校验，由调用者决定。"""
     tags = body.get("tags", [])
     if isinstance(tags, list):
         tags = ", ".join(tags)
@@ -1093,8 +1150,8 @@ def insert_worker(conn, body, account=None):
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            account_id,
-            company_key,
+            int(account_id or 0),
+            company_key or "",
             body.get("name", "").strip(),
             body.get("phone", "").strip(),
             body.get("gender", "").strip(),
@@ -1113,55 +1170,126 @@ def insert_worker(conn, body, account=None):
     return cursor.lastrowid
 
 
+def insert_worker(conn, body, account=None):
+    require_login(account)
+    return _do_insert_worker(
+        conn, body,
+        account_id=int(account["id"]),
+        company_key=account.get("companyKey", ""),
+    )
+
+
 def get_payload(account=None):
-    if not account:
+    if not account or not account.get("companyKey"):
         return public_demo_payload()
     with connect() as conn:
-        sync_knowledge_entries(conn)
-        demand_where = scoped_where(account)
-        worker_where = scoped_where(account)
-        knowledge_where = scoped_where(account)
-        knowledge_where = f"{knowledge_where} {'AND' if knowledge_where else 'WHERE'} is_deleted = 0"
-        demands = [row_to_demand(row) for row in conn.execute(f"SELECT * FROM demands {demand_where} ORDER BY start_date, id")]
-        workers = [row_to_worker(row) for row in conn.execute(f"SELECT * FROM workers {worker_where} ORDER BY id DESC")]
-        chat = [dict(row) for row in conn.execute("SELECT role, text FROM chat_messages ORDER BY id")]
+        demand_where, demand_params = scoped_where(account)
+        worker_where, worker_params = scoped_where(account)
+        knowledge_where, knowledge_params = scoped_where(account)
+        knowledge_where = f"{knowledge_where} AND is_deleted = 0"
+        chat_where, chat_params = scoped_where(account)
+        demands = [
+            row_to_demand(row)
+            for row in conn.execute(
+                f"SELECT * FROM demands {demand_where} ORDER BY start_date, id",
+                demand_params,
+            )
+        ]
+        workers = [
+            row_to_worker(row)
+            for row in conn.execute(
+                f"SELECT * FROM workers {worker_where} ORDER BY id DESC",
+                worker_params,
+            )
+        ]
+        chat = [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT role, text FROM chat_messages {chat_where} ORDER BY id",
+                chat_params,
+            )
+        ]
         knowledge = [
             row_to_knowledge(row)
-            for row in conn.execute(f"SELECT * FROM knowledge_entries {knowledge_where} ORDER BY updated_at DESC, id DESC")
+            for row in conn.execute(
+                f"SELECT * FROM knowledge_entries {knowledge_where} ORDER BY updated_at DESC, id DESC",
+                knowledge_params,
+            )
         ]
-    return {"account": account, "demands": demands, "workers": workers, "chat": chat, "knowledge": knowledge, "insights": build_insights(demands, workers)}
+    return {
+        "account": account,
+        "demands": demands,
+        "workers": workers,
+        "chat": chat,
+        "knowledge": knowledge,
+        "insights": build_insights(demands, workers),
+    }
 
 
-def reset_seed_data():
+def reset_seed_data(account):
+    """只清空并恢复当前租户的数据，避免影响其他企业。"""
+    require_login(account)
+    if account.get("role") != "owner":
+        raise PermissionError("只有老板/管理员可以恢复示例数据。")
+    company_key = account["companyKey"]
+    account_id = int(account["id"])
     with connect() as conn:
-        conn.execute("DELETE FROM chat_messages")
-        conn.execute("DELETE FROM workers")
-        conn.execute("DELETE FROM demands")
-        conn.execute("DELETE FROM knowledge_entries")
-        conn.executemany(
-            """
-            INSERT INTO demands
-            (company, role, type, location, start_date, end_date, headcount, signed, salary, age, notes)
-            VALUES (:company, :role, :type, :location, :start, :end, :headcount, :signed, :salary, :age, :notes)
-            """,
-            DEMANDS,
-        )
-        conn.executemany(
-            """
-            INSERT INTO workers
-            (name, location, available, period, salary, score, tags)
-            VALUES (:name, :location, :available, :period, :salary, :score, :tags)
-            """,
-            WORKERS,
-        )
+        conn.execute("DELETE FROM chat_messages WHERE company_key = ?", (company_key,))
+        conn.execute("DELETE FROM workers WHERE company_key = ?", (company_key,))
+        conn.execute("DELETE FROM demands WHERE company_key = ?", (company_key,))
+        conn.execute("DELETE FROM knowledge_entries WHERE company_key = ?", (company_key,))
+        for demand in DEMANDS:
+            conn.execute(
+                """
+                INSERT INTO demands
+                (account_id, company_key, company, role, type, location, start_date, end_date, headcount, signed, salary, age, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    account_id,
+                    company_key,
+                    demand["company"],
+                    demand["role"],
+                    demand["type"],
+                    demand["location"],
+                    demand["start"],
+                    demand["end"],
+                    demand["headcount"],
+                    demand["signed"],
+                    demand["salary"],
+                    demand["age"],
+                    demand["notes"],
+                ),
+            )
+        for worker in WORKERS:
+            conn.execute(
+                """
+                INSERT INTO workers
+                (account_id, company_key, name, location, available, period, salary, score, tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    account_id,
+                    company_key,
+                    worker["name"],
+                    worker["location"],
+                    worker["available"],
+                    worker["period"],
+                    worker["salary"],
+                    worker["score"],
+                    worker["tags"],
+                ),
+            )
         conn.execute(
-            "INSERT INTO chat_messages (role, text) VALUES (?, ?)",
+            "INSERT INTO chat_messages (account_id, company_key, role, text) VALUES (?, ?, ?, ?)",
             (
+                account_id,
+                company_key,
                 "assistant",
-                "已恢复乐颜提供的企业用工数据和演示求职者库，可以继续查询和推荐。",
+                "已恢复示例企业用工数据和演示求职者库到当前企业。",
             ),
         )
-        sync_knowledge_entries(conn)
+        sync_knowledge_entries(conn, company_key=company_key)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1169,11 +1297,24 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    # 只允许暴露这些静态文件；其余一律 404，防止 server.py / SQLite / .gitignore 等被下载
+    _STATIC_ALLOWLIST = {
+        "/", "/index.html", "/applicant.html",
+        "/app.js", "/applicant.js", "/styles.css",
+        "/favicon.ico",
+    }
+
     def do_GET(self):
         parsed = urlparse(self.path)
         account = get_account_from_headers(self.headers)
         if parsed.path == "/api/data":
             self.send_json(get_payload(account))
+            return
+        if parsed.path not in self._STATIC_ALLOWLIST:
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("Not Found".encode("utf-8"))
             return
         if parsed.path == "/":
             self.path = "/index.html"
@@ -1186,14 +1327,32 @@ class Handler(SimpleHTTPRequestHandler):
             body = self.read_json()
             name = body.get("name", "").strip()
             password = body.get("password", "")
+            company = body.get("company", "").strip()
+            role = body.get("role", "owner")
             if not name or not password:
                 self.send_json({"ok": False, "error": "账号和密码不能为空"}, status=400)
                 return
+            if len(password) < 6:
+                self.send_json({"ok": False, "error": "密码至少 6 位"}, status=400)
+                return
+            if not company:
+                self.send_json({"ok": False, "error": "企业名称不能为空"}, status=400)
+                return
+            company_key = normalize_company_key(company)
+            if not company_key:
+                self.send_json({"ok": False, "error": "企业名称无效，请使用中英文/数字"}, status=400)
+                return
+            if role not in ALLOWED_ROLES:
+                self.send_json({"ok": False, "error": "无效角色"}, status=400)
+                return
             token = secrets.token_urlsafe(32)
             with connect() as conn:
-                existing = conn.execute("SELECT id FROM accounts WHERE name = ?", (name,)).fetchone()
+                existing = conn.execute(
+                    "SELECT id FROM accounts WHERE name = ? AND company_key = ?",
+                    (name, company_key),
+                ).fetchone()
                 if existing:
-                    self.send_json({"ok": False, "error": "账号已存在"}, status=400)
+                    self.send_json({"ok": False, "error": "该企业下已存在同名账号"}, status=400)
                     return
                 cursor = conn.execute(
                     """
@@ -1203,9 +1362,9 @@ class Handler(SimpleHTTPRequestHandler):
                     (
                         name,
                         "enterprise",
-                        body.get("role", "owner"),
-                        normalize_company_key(body.get("company", "")),
-                        body.get("company", "").strip(),
+                        role,
+                        company_key,
+                        company,
                         body.get("phone", "").strip(),
                         hash_password(password),
                         token,
@@ -1216,12 +1375,59 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/auth/login":
             body = self.read_json()
+            login_name = body.get("name", "").strip()
+            login_company = body.get("company", "").strip()
             with connect() as conn:
-                row = conn.execute("SELECT * FROM accounts WHERE name = ?", (body.get("name", "").strip(),)).fetchone()
-                if not row or row["password_hash"] != hash_password(body.get("password", "")):
+                if login_company:
+                    company_key = normalize_company_key(login_company)
+                    row = conn.execute(
+                        "SELECT * FROM accounts WHERE name = ? AND company_key = ?",
+                        (login_name, company_key),
+                    ).fetchone()
+                else:
+                    # 兼容老链接：若未指定企业，但全局只有一个同名账号也允许登录
+                    rows = conn.execute(
+                        "SELECT * FROM accounts WHERE name = ?",
+                        (login_name,),
+                    ).fetchall()
+                    row = rows[0] if len(rows) == 1 else None
+                if not row or not verify_password(body.get("password", ""), row["password_hash"]):
                     self.send_json({"ok": False, "error": "账号或密码错误"}, status=401)
                     return
+                # 老的 SHA256 哈希在登录成功后顺手升级为 pbkdf2
+                if "$" not in (row["password_hash"] or ""):
+                    conn.execute(
+                        "UPDATE accounts SET password_hash = ? WHERE id = ?",
+                        (hash_password(body.get("password", "")), row["id"]),
+                    )
+                    row = conn.execute("SELECT * FROM accounts WHERE id = ?", (row["id"],)).fetchone()
             self.send_json({"ok": True, "account": account_public(row), "data": get_payload(account_public(row))})
+            return
+        if parsed.path == "/api/applicant/register":
+            # 求职者自助登记：不需要登录，但必须明确指定中介企业
+            body = self.read_json()
+            target_key = normalize_company_key(body.get("companyKey", "") or body.get("agency", ""))
+            if not target_key:
+                self.send_json({"ok": False, "error": "缺少中介公司标识，请通过业务员发送的链接登记"}, status=400)
+                return
+            with connect() as conn:
+                agent_row = conn.execute(
+                    "SELECT id, company_key FROM accounts WHERE company_key = ? LIMIT 1",
+                    (target_key,),
+                ).fetchone()
+                if not agent_row:
+                    self.send_json({"ok": False, "error": "中介公司不存在"}, status=400)
+                    return
+                name = (body.get("name") or "").strip()
+                phone = (body.get("phone") or "").strip()
+                location = (body.get("location") or "").strip()
+                if not name or not phone or not location:
+                    self.send_json({"ok": False, "error": "姓名、手机号、当前地区必填"}, status=400)
+                    return
+                body["source"] = "求职者自助登记"
+                _do_insert_worker(conn, body, account_id=int(agent_row["id"]), company_key=target_key)
+                sync_knowledge_entries(conn, company_key=target_key)
+            self.send_json({"ok": True})
             return
         if parsed.path == "/api/demands":
             if not can_write(account):
@@ -1230,7 +1436,7 @@ class Handler(SimpleHTTPRequestHandler):
             body = self.read_json()
             with connect() as conn:
                 demand_id = insert_demand(conn, body, account)
-                sync_knowledge_entries(conn)
+                sync_knowledge_entries(conn, company_key=account["companyKey"])
             self.send_json({"ok": True, "id": demand_id, "data": get_payload(account)})
             return
         if parsed.path == "/api/fuzzy/parse":
@@ -1275,7 +1481,7 @@ class Handler(SimpleHTTPRequestHandler):
             with connect() as conn:
                 for item in items:
                     ids.append(insert_worker(conn, item, account) if kind == "worker" else insert_demand(conn, item, account))
-                sync_knowledge_entries(conn)
+                sync_knowledge_entries(conn, company_key=account["companyKey"])
             self.send_json({"ok": True, "ids": ids, "data": get_payload(account)})
             return
         if parsed.path == "/api/workers":
@@ -1285,27 +1491,38 @@ class Handler(SimpleHTTPRequestHandler):
             body = self.read_json()
             with connect() as conn:
                 worker_id = insert_worker(conn, body, account)
-                sync_knowledge_entries(conn)
+                sync_knowledge_entries(conn, company_key=account["companyKey"])
             self.send_json({"ok": True, "id": worker_id, "data": get_payload(account)})
             return
         if parsed.path == "/api/chat":
+            if not account:
+                self.send_json({"ok": False, "error": "请先登录账号后再提问"}, status=401)
+                return
             body = self.read_json()
             question = body.get("question", "").strip()
             if not question:
                 self.send_json({"ok": False, "error": "问题不能为空"}, status=400)
                 return
-            payload = get_payload()
+            # 关键修复：AI 现在基于当前租户的真实数据回答，而不是 demo 数据
+            payload = get_payload(account)
             answer = answer_question(question, payload)
             with connect() as conn:
-                conn.execute("INSERT INTO chat_messages (role, text) VALUES (?, ?)", ("user", question))
-                conn.execute("INSERT INTO chat_messages (role, text) VALUES (?, ?)", ("assistant", answer))
+                conn.execute(
+                    "INSERT INTO chat_messages (account_id, company_key, role, text) VALUES (?, ?, ?, ?)",
+                    (int(account["id"]), account["companyKey"], "user", question),
+                )
+                conn.execute(
+                    "INSERT INTO chat_messages (account_id, company_key, role, text) VALUES (?, ?, ?, ?)",
+                    (int(account["id"]), account["companyKey"], "assistant", answer),
+                )
             self.send_json({"ok": True, "answer": answer, "data": get_payload(account)})
             return
         if parsed.path == "/api/reset":
-            if not account or account.get("role") != "owner":
-                self.send_json({"ok": False, "error": "只有老板/管理员可以恢复示例数据"}, status=403)
+            try:
+                reset_seed_data(account)
+            except PermissionError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=403)
                 return
-            reset_seed_data()
             self.send_json({"ok": True, "data": get_payload(account)})
             return
         if parsed.path == "/api/knowledge/rebuild":
@@ -1313,8 +1530,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "请先登录账号后再重建知识库"}, status=401)
                 return
             with connect() as conn:
-                conn.execute("DELETE FROM knowledge_entries WHERE entity_type != 'manual'")
-                sync_knowledge_entries(conn)
+                # 只清除当前租户的自动同步条目，不影响其他企业
+                conn.execute(
+                    "DELETE FROM knowledge_entries WHERE entity_type != 'manual' AND company_key = ?",
+                    (account["companyKey"],),
+                )
+                sync_knowledge_entries(conn, company_key=account["companyKey"])
             self.send_json({"ok": True, "data": get_payload(account)})
             return
         if parsed.path == "/api/knowledge/save":
@@ -1370,6 +1591,8 @@ class Handler(SimpleHTTPRequestHandler):
             raise ValueError("上传格式不正确")
         boundary = ("--" + match.group(1).strip('"')).encode("utf-8")
         length = int(self.headers.get("Content-Length", "0") or 0)
+        if length > MAX_UPLOAD_BYTES:
+            raise ValueError(f"上传文件过大，单次上限 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
         body = self.rfile.read(length)
         result = {}
         for part in body.split(boundary):
@@ -1505,6 +1728,8 @@ def format_demand_answer(title, items, workers):
             f"- {item['company']} {item['role']}：{item['type']}，{item['start']}至{item['end'] or '长期'}，缺 {remaining(item)} 人，{item['salary']}。建议人选：{matches or '暂无'}"
         )
     return "\n".join(lines)
+
+
 
 
 if __name__ == "__main__":

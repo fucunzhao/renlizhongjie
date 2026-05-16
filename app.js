@@ -72,6 +72,10 @@ async function loadData() {
   if (payload.account) {
     account = payload.account;
     localStorage.setItem("labor-account", JSON.stringify(account));
+  } else {
+    // 后台说当前未登录（token 失效或服务端重启）；清掉前端的过期账号信息，避免 UI 显示已登录但数据是 demo
+    account = null;
+    localStorage.removeItem("labor-account");
   }
   data = payload;
   renderAccount();
@@ -98,7 +102,7 @@ function daysUntil(dateText) {
 }
 
 function tag(text, extra = "") {
-  return `<span class="badge ${extra}">${text}</span>`;
+  return `<span class="badge ${extra}">${escapeHtml(text)}</span>`;
 }
 
 function renderAll() {
@@ -124,6 +128,23 @@ function renderAccount() {
     item.disabled = !account;
     item.title = account ? "" : "请先登录账号";
   });
+  // 让"求职者自助登记"链接带上当前中介的 companyKey，未登录时禁用
+  const applicantLink = document.querySelector(".link-button[href^='applicant.html']");
+  if (applicantLink) {
+    if (account && account.companyKey) {
+      applicantLink.href = `applicant.html?agency=${encodeURIComponent(account.companyKey)}`;
+      applicantLink.removeAttribute("aria-disabled");
+      applicantLink.style.pointerEvents = "";
+      applicantLink.style.opacity = "";
+      applicantLink.title = "把这个链接发给求职者";
+    } else {
+      applicantLink.href = "applicant.html";
+      applicantLink.title = "登录后再分享给求职者";
+      applicantLink.style.pointerEvents = "none";
+      applicantLink.style.opacity = "0.5";
+      applicantLink.setAttribute("aria-disabled", "true");
+    }
+  }
 }
 
 function renderFuzzyResults() {
@@ -212,8 +233,8 @@ function renderDashboard() {
 
   els.urgentList.innerHTML = urgent.map(item => `
     <article class="item">
-      <div class="item-top"><strong>${item.company} · ${item.role}</strong>${tag(`缺 ${remaining(item)} 人`, remaining(item) > 60 ? "danger" : "warn")}</div>
-      <div class="item-meta"><span>${formatDateRange(item)}</span><span>${item.location}</span><span>${item.salary}</span></div>
+      <div class="item-top"><strong>${h(item.company)} · ${h(item.role)}</strong>${tag(`缺 ${remaining(item)} 人`, remaining(item) > 60 ? "danger" : "warn")}</div>
+      <div class="item-meta"><span>${h(formatDateRange(item))}</span><span>${h(item.location)}</span><span>${h(item.salary)}</span></div>
     </article>
   `).join("") || `<p class="item-meta">暂无紧急缺口</p>`;
 
@@ -221,8 +242,8 @@ function renderDashboard() {
     const matches = rankWorkers(item).slice(0, 3);
     return `
       <article class="item">
-        <div class="item-top"><strong>${item.company} ${item.role}</strong>${tag("预招募")}</div>
-        <div class="item-meta"><span>建议联系：${matches.map(match => match.worker.name).join("、") || "暂无合适人选"}</span></div>
+        <div class="item-top"><strong>${h(item.company)} ${h(item.role)}</strong>${tag("预招募")}</div>
+        <div class="item-meta"><span>建议联系：${matches.map(match => h(match.worker.name)).join("、") || "暂无合适人选"}</span></div>
       </article>
     `;
   });
@@ -238,7 +259,7 @@ function renderCalendar() {
 
   const companies = ["all", ...new Set(data.demands.map(item => item.company))];
   const currentCompany = els.companyFilter.value || "all";
-  els.companyFilter.innerHTML = companies.map(company => `<option value="${company}">${company === "all" ? "全部企业" : company}</option>`).join("");
+  els.companyFilter.innerHTML = companies.map(company => `<option value="${escapeAttr(company)}">${company === "all" ? "全部企业" : h(company)}</option>`).join("");
   els.companyFilter.value = companies.includes(currentCompany) ? currentCompany : "all";
 
   const selectedYear = Number(els.yearSelect.value || currentYear);
@@ -259,8 +280,8 @@ function renderCalendar() {
         <div class="month-title"><span>${month + 1}月</span><span>${monthGap ? `缺 ${monthGap}` : "无排期"}</span></div>
         ${monthDemands.map(item => `
           <div class="mini-demand">
-            <strong>${item.company} · ${item.role}</strong>
-            <span>${item.type}｜${formatDateRange(item)}｜缺 ${remaining(item)} 人</span>
+            <strong>${h(item.company)} · ${h(item.role)}</strong>
+            <span>${h(item.type)}｜${h(formatDateRange(item))}｜缺 ${remaining(item)} 人</span>
           </div>
         `).join("") || `<p class="item-meta">暂无企业用工计划</p>`}
       </section>
@@ -278,14 +299,14 @@ function renderDemandTable() {
     const matches = rankWorkers(item).slice(0, 2);
     return `
       <tr>
-        <td><strong>${item.company}</strong><br><span class="item-meta">${item.location}</span></td>
-        <td>${item.role}<br>${tag(item.type)}</td>
-        <td>${formatDateRange(item)}</td>
-        <td>${item.headcount} 人</td>
+        <td><strong>${h(item.company)}</strong><br><span class="item-meta">${h(item.location)}</span></td>
+        <td>${h(item.role)}<br>${tag(item.type)}</td>
+        <td>${h(formatDateRange(item))}</td>
+        <td>${h(item.headcount)} 人</td>
         <td>${tag(`${remaining(item)} 人`, remaining(item) > 50 ? "danger" : "warn")}</td>
-        <td>${item.salary}</td>
+        <td>${h(item.salary)}</td>
         <td>${remaining(item) === 0 ? tag("已满员") : tag("匹配中", "warn")}</td>
-        <td>${matches.map(match => `${match.worker.name} ${match.score}分`).join("<br>") || "暂无"}</td>
+        <td>${matches.map(match => `${h(match.worker.name)} ${match.score}分`).join("<br>") || "暂无"}</td>
       </tr>
     `;
   }).join("");
@@ -301,16 +322,16 @@ function renderWorkers() {
     const best = bestDemandFor(worker);
     return `
       <article class="worker-card">
-        <h3>${worker.name}</h3>
-        <p class="item-meta">${worker.location}｜${worker.available}｜${worker.period}</p>
-        <p class="item-meta">${[worker.gender, worker.age ? `${worker.age}岁` : "", worker.phone].filter(Boolean).join("｜") || "基础信息待补充"}</p>
-        ${worker.expectedRole ? `<p>期望岗位：${worker.expectedRole}</p>` : ""}
-        <p>${worker.salary || "薪资待确认"}｜稳定性 ${worker.score} 分</p>
-        ${worker.note ? `<p class="item-meta">备注：${worker.note}</p>` : ""}
+        <h3>${h(worker.name)}</h3>
+        <p class="item-meta">${h(worker.location)}｜${h(worker.available)}｜${h(worker.period)}</p>
+        <p class="item-meta">${[worker.gender, worker.age ? `${worker.age}岁` : "", worker.phone].filter(Boolean).map(h).join("｜") || "基础信息待补充"}</p>
+        ${worker.expectedRole ? `<p>期望岗位：${h(worker.expectedRole)}</p>` : ""}
+        <p>${h(worker.salary || "薪资待确认")}｜稳定性 ${Number(worker.score) || 0} 分</p>
+        ${worker.note ? `<p class="item-meta">备注：${h(worker.note)}</p>` : ""}
         <div class="tags">${worker.tags.map(item => tag(item)).join("")}</div>
         <div class="item" style="margin-top:12px">
           <strong>推荐岗位</strong>
-          <span class="item-meta">${best ? `${best.demand.company} · ${best.demand.role}（${best.score}分）` : "暂无合适岗位"}</span>
+          <span class="item-meta">${best ? `${h(best.demand.company)} · ${h(best.demand.role)}（${best.score}分）` : "暂无合适岗位"}</span>
         </div>
       </article>
     `;
@@ -322,10 +343,10 @@ function renderKnowledge() {
   const byCompany = groupBy(data.demands, "company");
   const highGap = [...data.demands].sort((a, b) => remaining(b) - remaining(a)).slice(0, 3);
   els.knowledgeSummary.innerHTML = `
-    <div class="knowledge-block"><strong>企业知识</strong>${Object.keys(byCompany).map(company => `${company}：${byCompany[company].length} 条需求`).join("<br>")}</div>
-    <div class="knowledge-block"><strong>用工类型</strong>${Object.keys(byType).map(type => `${type}：${byType[type].length} 条`).join("<br>")}</div>
-    <div class="knowledge-block"><strong>重点缺口</strong>${highGap.map(item => `${item.company}${item.role} 缺 ${remaining(item)} 人`).join("<br>")}</div>
-    <div class="knowledge-block"><strong>求职者标签</strong>${topTags().map(([name, count]) => `${name}：${count} 人`).join("<br>")}</div>
+    <div class="knowledge-block"><strong>企业知识</strong>${Object.keys(byCompany).map(company => `${h(company)}：${byCompany[company].length} 条需求`).join("<br>")}</div>
+    <div class="knowledge-block"><strong>用工类型</strong>${Object.keys(byType).map(type => `${h(type)}：${byType[type].length} 条`).join("<br>")}</div>
+    <div class="knowledge-block"><strong>重点缺口</strong>${highGap.map(item => `${h(item.company)}${h(item.role)} 缺 ${remaining(item)} 人`).join("<br>")}</div>
+    <div class="knowledge-block"><strong>求职者标签</strong>${topTags().map(([name, count]) => `${h(name)}：${count} 人`).join("<br>")}</div>
   `;
 }
 
@@ -348,15 +369,15 @@ function renderKnowledgeBase() {
   els.knowledgeList.innerHTML = filtered.map(item => `
     <article class="item">
       <div class="item-top">
-        <label class="check-row"><input type="checkbox" class="knowledge-check" value="${item.id}"> <strong>${item.title}</strong></label>
+        <label class="check-row"><input type="checkbox" class="knowledge-check" value="${Number(item.id) || 0}"> <strong>${h(item.title)}</strong></label>
         ${tag(item.category)}
       </div>
-      <p>${item.summary}</p>
+      <p>${h(item.summary)}</p>
       <div class="tags">${item.tags.slice(0, 8).map(tagName => tag(tagName)).join("")}</div>
-      <div class="item-meta"><span>来源：${item.source || "系统沉淀"}</span><span>可信度：${item.confidence}%</span><span>${item.entityType || "manual"}</span></div>
+      <div class="item-meta"><span>来源：${h(item.source || "系统沉淀")}</span><span>可信度：${Number(item.confidence) || 0}%</span><span>${h(item.entityType || "manual")}</span></div>
       <div class="public-actions">
-        <button class="ghost knowledge-edit" data-id="${item.id}" data-write>修改</button>
-        <button class="ghost knowledge-delete" data-id="${item.id}" data-write>删除</button>
+        <button class="ghost knowledge-edit" data-id="${Number(item.id) || 0}" data-write>修改</button>
+        <button class="ghost knowledge-delete" data-id="${Number(item.id) || 0}" data-write>删除</button>
       </div>
     </article>
   `).join("") || `<p class="item-meta">暂无匹配的知识条目</p>`;
@@ -364,8 +385,8 @@ function renderKnowledgeBase() {
 
   const block = (title, items, emptyText) => `
     <div class="knowledge-block">
-      <strong>${title}</strong>
-      ${items?.length ? items.map(item => `${item.title}${item.value ? `：${item.value}人` : ""}<br><span class="item-meta">${item.note || ""}</span>`).join("<br>") : emptyText}
+      <strong>${h(title)}</strong>
+      ${items?.length ? items.map(item => `${h(item.title)}${item.value ? `：${Number(item.value)}人` : ""}<br><span class="item-meta">${h(item.note || "")}</span>`).join("<br>") : h(emptyText)}
     </div>
   `;
   els.insightList.innerHTML = [
@@ -449,7 +470,7 @@ function bestDemandFor(worker) {
 }
 
 function escapeHtml(text) {
-  return text.replace(/[&<>"']/g, char => ({
+  return String(text ?? "").replace(/[&<>"']/g, char => ({
     "&": "&amp;",
     "<": "&lt;",
     ">": "&gt;",
@@ -457,6 +478,9 @@ function escapeHtml(text) {
     "'": "&#039;"
   }[char]));
 }
+
+// 简短别名，便于在模板字符串里大量使用
+function h(text) { return escapeHtml(text); }
 
 function escapeAttr(text) {
   return escapeHtml(String(text || ""));
@@ -623,7 +647,13 @@ document.querySelector("#parseFuzzy").addEventListener("click", async () => {
     }
     fuzzyItems = payload.items || [];
     renderFuzzyResults();
-    setFuzzyStatus(fuzzyItems.length ? `识别完成，共 ${fuzzyItems.length} 条，请检查后导入。` : "没有识别到可导入的企业需求。", !fuzzyItems.length);
+    const kindLabel = fuzzyKind === "worker" ? "求职者信息" : "企业需求";
+    setFuzzyStatus(
+      fuzzyItems.length
+        ? `识别完成，共 ${fuzzyItems.length} 条，请检查后导入。`
+        : `没有识别到可导入的${kindLabel}。`,
+      !fuzzyItems.length
+    );
   } catch (error) {
     setFuzzyStatus(`识别失败：${error.message}。如果刚更新过代码，请确认服务器已经 git pull 并重启。`, true);
   } finally {
@@ -639,26 +669,32 @@ document.querySelector("#importFuzzy").addEventListener("click", async () => {
     return;
   }
   const button = document.querySelector("#importFuzzy");
+  const kindLabel = fuzzyKind === "worker" ? "求职者" : "企业需求";
   button.disabled = true;
   button.textContent = "导入中...";
   try {
     const payload = await api("/api/fuzzy/import", {
       method: "POST",
-    body: JSON.stringify({ items, kind: fuzzyKind })
+      body: JSON.stringify({ items, kind: fuzzyKind })
     });
     data = payload.data;
     fuzzyItems = [];
     els.fuzzyText.value = "";
     renderFuzzyResults();
     renderAll();
-    setFuzzyStatus("已导入企业需求，并同步进入全年日历和私有知识库。");
+    setFuzzyStatus(`已导入${kindLabel}，并同步进入${fuzzyKind === "worker" ? "求职者库" : "全年日历"}和私有知识库。`);
   } catch (error) {
     setFuzzyStatus(`导入失败：${error.message}`, true);
   } finally {
     button.disabled = false;
-    button.textContent = "确认导入企业需求";
+    button.textContent = `确认导入${kindLabel}`;
   }
 });
+
+function refreshImportButtonText() {
+  const importBtn = document.querySelector("#importFuzzy");
+  if (importBtn) importBtn.textContent = fuzzyKind === "worker" ? "确认导入求职者" : "确认导入企业需求";
+}
 
 document.querySelector("#clearFuzzy").addEventListener("click", () => {
   fuzzyItems = [];
@@ -687,6 +723,7 @@ document.querySelectorAll("[data-fuzzy-kind]").forEach(button => {
     button.classList.add("active");
     fuzzyItems = [];
     renderFuzzyResults();
+    refreshImportButtonText();
     setFuzzyStatus(fuzzyKind === "worker" ? "已切换到求职者信息采集。" : "已切换到企业用工信息采集。");
   });
 });
@@ -739,6 +776,9 @@ document.querySelector("#loginForm").addEventListener("submit", async event => {
 document.querySelector("#logoutAccount").addEventListener("click", async () => {
   account = null;
   localStorage.removeItem("labor-account");
+  // 退出后让所有视图回到 demo 状态
+  data = { demands: [], workers: [], chat: [] };
+  renderAccount();
   showAccountMessage("已退出登录。");
   await loadData();
 });

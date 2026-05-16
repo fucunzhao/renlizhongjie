@@ -1,61 +1,53 @@
 const form = document.querySelector("#applicantForm");
 const successBox = document.querySelector("#successBox");
+const agencyHint = document.querySelector("#agencyHint");
 
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options
-  });
+const params = new URLSearchParams(window.location.search);
+const agencyKey = (params.get("agency") || "").trim();
+
+if (!agencyKey) {
+  if (agencyHint) agencyHint.textContent = "提示：当前链接没有指定中介公司，请联系业务员获取专属登记链接。";
+  const submitBtn = form.querySelector("button[type='submit']");
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.title = "需要业务员发送的专属登记链接";
+  }
+} else if (agencyHint) {
+  agencyHint.textContent = "登记后会进入中介公司专属人才库（中介标识：" + agencyKey + "）";
+}
+
+async function api(path, options) {
+  options = options || {};
+  const response = await fetch(path, Object.assign({
+    headers: { "Content-Type": "application/json" }
+  }, options));
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || "提交失败");
   return payload;
 }
 
-function toWorkerPayload(formData) {
+function toApplicantPayload(formData) {
   const rawTags = formData.get("tags") || "";
   const housing = formData.get("housing") || "";
-  const tags = rawTags
-    .split(/[,，]/)
-    .map(item => item.trim())
-    .filter(Boolean);
+  const tags = rawTags.split(/[,，]/).map(s => s.trim()).filter(Boolean);
   if (housing) tags.push(housing);
-
+  const g = (k) => (formData.get(k) || "").toString().trim();
   return {
-    name: formData.get("name").trim(),
-    phone: formData.get("phone").trim(),
-    gender: formData.get("gender"),
-    age: formData.get("age"),
-    location: formData.get("location").trim(),
-    available: formData.get("available").trim(),
-    period: formData.get("period"),
-    expectedRole: formData.get("expectedRole").trim(),
-    salary: formData.get("salary").trim(),
+    companyKey: agencyKey,
+    name: g("name"),
+    phone: g("phone"),
+    gender: formData.get("gender") || "",
+    age: formData.get("age") || "",
+    location: g("location"),
+    available: g("available"),
+    period: formData.get("period") || "",
+    expectedRole: g("expectedRole"),
+    salary: g("salary"),
     score: 75,
-    tags,
-    note: formData.get("note").trim(),
+    tags: tags,
+    note: g("note"),
     source: "求职者自助登记"
   };
 }
 
-form.addEventListener("submit", async event => {
-  event.preventDefault();
-  const submitButton = form.querySelector("button[type='submit']");
-  submitButton.disabled = true;
-  submitButton.textContent = "提交中...";
-  successBox.classList.remove("show");
-
-  try {
-    await api("/api/workers", {
-      method: "POST",
-      body: JSON.stringify(toWorkerPayload(new FormData(form)))
-    });
-    form.reset();
-    successBox.classList.add("show");
-  } catch (error) {
-    successBox.textContent = `提交失败：${error.message}`;
-    successBox.classList.add("show");
-  } finally {
-    submitButton.disabled = false;
-    submitButton.textContent = "提交登记";
-  }
-});
+form.addEventList
