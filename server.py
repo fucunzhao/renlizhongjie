@@ -999,8 +999,90 @@ def parse_fuzzy_demands(text):
     return results
 
 
-def parse_fuzzy_workers(text):
+def parse_worker_table_rows(text):
+    """Parse xlsx/csv-style rows extracted as `cell | cell | cell` text."""
+    aliases = {
+        "name": ["\u59d3\u540d", "\u540d\u5b57"],
+        "phone": ["\u624b\u673a\u53f7", "\u7535\u8bdd", "\u8054\u7cfb\u7535\u8bdd", "\u624b\u673a"],
+        "gender": ["\u6027\u522b"],
+        "age": ["\u5e74\u9f84"],
+        "location": ["\u5f53\u524d\u5730\u533a", "\u5730\u533a", "\u4f4d\u7f6e", "\u6240\u5728\u5730"],
+        "available": ["\u53ef\u5230\u5c97\u65f6\u95f4", "\u53ef\u5230\u5c97", "\u5230\u5c97\u65f6\u95f4"],
+        "period": ["\u6c42\u804c\u5468\u671f", "\u5468\u671f", "\u5de5\u671f"],
+        "expectedRole": ["\u671f\u671b\u5c97\u4f4d", "\u60f3\u505a", "\u6c42\u804c\u5c97\u4f4d"],
+        "salary": ["\u671f\u671b\u85aa\u8d44", "\u85aa\u8d44", "\u5de5\u8d44"],
+        "tags": ["\u6807\u7b7e", "\u4e2a\u4eba\u6807\u7b7e"],
+        "note": ["\u5907\u6ce8", "\u8ddf\u8fdb\u8bb0\u5f55", "\u5176\u4ed6\u8bf4\u660e"],
+        "source": ["\u6765\u6e90", "\u63a8\u8350\u4eba"],
+        "night": ["\u662f\u5426\u63a5\u53d7\u591c\u73ed", "\u63a5\u53d7\u591c\u73ed"],
+        "dorm": ["\u662f\u5426\u9700\u8981\u4f4f\u5bbf", "\u9700\u8981\u4f4f\u5bbf"],
+        "shift": ["\u662f\u5426\u63a5\u53d7\u5012\u73ed", "\u63a5\u53d7\u5012\u73ed"],
+        "experience": ["\u6709\u65e0\u7ecf\u9a8c", "\u7ecf\u9a8c"],
+        "health": ["\u5065\u5eb7/\u4f53\u68c0\u60c5\u51b5", "\u4f53\u68c0", "\u5065\u5eb7"],
+    }
+
+    def normalize_header(value):
+        value = re.sub(r"[\s:*：\uff0a*()（）/]+", "", value or "")
+        for key, names in aliases.items():
+            if any(name.replace("/", "") in value for name in names):
+                return key
+        return ""
+
+    lines = [line.strip() for line in text.splitlines() if "|" in line and line.strip()]
     items = []
+    headers = []
+    for line in lines:
+        cells = [cell.strip() for cell in line.split("|")]
+        mapped = [normalize_header(cell) for cell in cells]
+        if "name" in mapped and ("phone" in mapped or "age" in mapped or "expectedRole" in mapped):
+            headers = mapped
+            continue
+        if not headers:
+            continue
+        row = {}
+        for index, key in enumerate(headers):
+            if key and index < len(cells):
+                row[key] = cells[index].strip()
+        if not row.get("name") or row["name"] in {"-", "\u5f85\u586b", "\u5fc5\u586b"}:
+            continue
+        tags = [tag.strip() for tag in re.split(r"[,，;；/\u3001]", row.get("tags", "")) if tag.strip()]
+        for key, label in [
+            ("night", "\u63a5\u53d7\u591c\u73ed"),
+            ("dorm", "\u9700\u8981\u4f4f\u5bbf"),
+            ("shift", "\u63a5\u53d7\u5012\u73ed"),
+        ]:
+            value = row.get(key, "")
+            if value and not re.search(r"\u5426|\u4e0d", value):
+                tags.append(label)
+        for key in ("experience", "health"):
+            if row.get(key):
+                tags.append(row[key])
+        note_parts = [row.get("note", "")]
+        if row.get("source"):
+            note_parts.append("\u6765\u6e90/\u63a8\u8350\u4eba\uff1a" + row["source"])
+        items.append({
+            "name": row.get("name", ""),
+            "phone": row.get("phone", ""),
+            "gender": row.get("gender", ""),
+            "age": row.get("age", ""),
+            "location": row.get("location", "") or "\u5f85\u786e\u8ba4\u5730\u70b9",
+            "available": row.get("available", "") or "\u5f85\u786e\u8ba4",
+            "period": row.get("period", "") or "1-3\u4e2a\u6708",
+            "expectedRole": row.get("expectedRole", ""),
+            "salary": row.get("salary", ""),
+            "score": 75,
+            "tags": sorted(set(tags)),
+            "note": "\n".join(part for part in note_parts if part)[:1200],
+            "source": "\u8868\u683c\u5bfc\u5165",
+            "confidence": 82,
+        })
+    return items
+
+
+def parse_fuzzy_workers(text):
+    items = parse_worker_table_rows(text)
+    if items:
+        return items
     for section in split_fuzzy_sections(text):
         lines = [line.strip() for line in section.splitlines() if line.strip()]
         first = lines[0] if lines else ""
