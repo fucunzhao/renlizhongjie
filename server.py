@@ -975,8 +975,88 @@ def infer_headcount(section):
     return int(count) if count.isdigit() else 20
 
 
-def parse_fuzzy_demands(text):
+def parse_demand_table_rows(text):
+    """Parse xlsx/csv-style demand rows extracted as `cell | cell | cell` text."""
+    aliases = {
+        "company": ["企业名称", "企业", "公司", "工厂名称", "工厂"],
+        "role": ["岗位名称", "招聘岗位", "岗位", "工种"],
+        "type": ["用工类型", "类型", "工期类型"],
+        "location": ["工作地点", "地点", "地区", "厂区"],
+        "start": ["开始日期", "开始时间", "用工开始", "起始日期"],
+        "end": ["结束日期", "结束时间", "用工结束", "截止日期"],
+        "headcount": ["需求人数", "招聘人数", "人数", "缺口人数"],
+        "signed": ["已报名人数", "已签约人数", "已安排人数", "已到岗人数"],
+        "salary": ["薪资待遇", "工价", "薪资", "工资", "综合工资"],
+        "age": ["年龄要求", "年龄"],
+        "workTime": ["上班时间", "工作时间", "班次"],
+        "meal": ["吃住情况", "食宿", "包吃包住", "餐食住宿"],
+        "interview": ["面试时间", "面试安排"],
+        "contact": ["联系人", "驻厂", "联系电话", "报名电话"],
+        "requirements": ["岗位要求", "招聘要求", "要求"],
+        "notes": ["备注", "其他说明", "原文"],
+    }
+
+    def normalize_header(value):
+        value = re.sub(r"[\s:*：\uff0a*()（）/]+", "", value or "")
+        for key, names in aliases.items():
+            if any(name.replace("/", "") in value for name in names):
+                return key
+        return ""
+
+    def as_int(value, default=0):
+        match = re.search(r"\d+", str(value or ""))
+        return int(match.group(0)) if match else default
+
+    lines = [line.strip() for line in text.splitlines() if "|" in line and line.strip()]
     results = []
+    headers = []
+    for line in lines:
+        cells = [cell.strip() for cell in line.split("|")]
+        mapped = [normalize_header(cell) for cell in cells]
+        if "company" in mapped and ("role" in mapped or "headcount" in mapped or "salary" in mapped):
+            headers = mapped
+            continue
+        if not headers:
+            continue
+        row = {}
+        for index, key in enumerate(headers):
+            if key and index < len(cells):
+                row[key] = cells[index].strip()
+        if not row.get("company") or row["company"] in {"-", "待填", "必填"}:
+            continue
+        notes_parts = []
+        for key, label in [
+            ("workTime", "上班时间"),
+            ("meal", "吃住情况"),
+            ("interview", "面试时间"),
+            ("contact", "联系人"),
+            ("requirements", "岗位要求"),
+            ("notes", "备注"),
+        ]:
+            if row.get(key):
+                notes_parts.append(f"{label}：{row[key]}")
+        results.append({
+            "company": row.get("company", ""),
+            "role": row.get("role", "") or "普工",
+            "type": row.get("type", "") or infer_type(" ".join(row.values())),
+            "location": row.get("location", "") or infer_location(" ".join(row.values()), row.get("company", "")),
+            "start": row.get("start", "") or "2026-05-13",
+            "end": row.get("end", ""),
+            "headcount": as_int(row.get("headcount"), 20),
+            "signed": as_int(row.get("signed"), 0),
+            "salary": row.get("salary", ""),
+            "age": row.get("age", ""),
+            "notes": "\n".join(notes_parts)[:1800],
+            "confidence": 84,
+            "sourceText": line,
+        })
+    return results
+
+
+def parse_fuzzy_demands(text):
+    results = parse_demand_table_rows(text)
+    if results:
+        return results
     for section in split_fuzzy_sections(text):
         company = infer_company(section)
         results.append(
@@ -1146,6 +1226,15 @@ def io_bytes(raw):
 
 
 def extract_xlsx_text(raw):
+    def column_index(cell_ref):
+        letters = re.match(r"([A-Z]+)", cell_ref or "")
+        if not letters:
+            return None
+        index = 0
+        for char in letters.group(1):
+            index = index * 26 + ord(char) - ord("A") + 1
+        return index - 1
+
     with zipfile.ZipFile(io_bytes(raw)) as archive:
         shared_strings = []
         if "xl/sharedStrings.xml" in archive.namelist():
@@ -1162,6 +1251,10 @@ def extract_xlsx_text(raw):
             for row in root.findall(".//x:row", ns):
                 cells = []
                 for cell in row.findall("x:c", ns):
+                    index = column_index(cell.attrib.get("r", ""))
+                    if index is not None:
+                        while len(cells) < index:
+                            cells.append("")
                     value_node = cell.find("x:v", ns)
                     inline_node = cell.find("x:is", ns)
                     value = ""
