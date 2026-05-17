@@ -1232,6 +1232,8 @@ def parse_worker_table_rows(text):
         "tags": ["\u6807\u7b7e", "\u4e2a\u4eba\u6807\u7b7e"],
         "note": ["\u5907\u6ce8", "\u8ddf\u8fdb\u8bb0\u5f55", "\u5176\u4ed6\u8bf4\u660e"],
         "source": ["\u6765\u6e90", "\u63a8\u8350\u4eba"],
+        "status": ["\u670d\u52a1\u72b6\u6001", "\u6c42\u804c\u72b6\u6001", "\u72b6\u6001"],
+        "nextFollowAt": ["\u4e0b\u6b21\u8ddf\u8fdb", "\u4e0b\u6b21\u8ddf\u8fdb\u65e5\u671f", "\u8ba1\u5212\u56de\u8bbf"],
         "night": ["\u662f\u5426\u63a5\u53d7\u591c\u73ed", "\u63a5\u53d7\u591c\u73ed"],
         "dorm": ["\u662f\u5426\u9700\u8981\u4f4f\u5bbf", "\u9700\u8981\u4f4f\u5bbf"],
         "shift": ["\u662f\u5426\u63a5\u53d7\u5012\u73ed", "\u63a5\u53d7\u5012\u73ed"],
@@ -1278,6 +1280,17 @@ def parse_worker_table_rows(text):
         note_parts = [row.get("note", "")]
         if row.get("source"):
             note_parts.append("\u6765\u6e90/\u63a8\u8350\u4eba\uff1a" + row["source"])
+        status_map = {
+            "\u65b0\u7ebf\u7d22": "new_lead",
+            "\u5df2\u6c9f\u901a": "contacted",
+            "\u5df2\u63a8\u8350": "recommended",
+            "\u5df2\u9762\u8bd5": "interviewed",
+            "\u5df2\u5230\u5c97": "arrived",
+            "\u5728\u804c": "employed",
+            "\u79bb\u804c": "left",
+            "\u53ef\u518d\u63a8\u8350": "reusable",
+        }
+        status = row.get("status", "").strip()
         items.append({
             "name": row.get("name", ""),
             "phone": row.get("phone", ""),
@@ -1292,6 +1305,8 @@ def parse_worker_table_rows(text):
             "tags": sorted(set(tags)),
             "note": "\n".join(part for part in note_parts if part)[:1200],
             "source": "\u8868\u683c\u5bfc\u5165",
+            "status": status_map.get(status, status or "new_lead"),
+            "nextFollowAt": row.get("nextFollowAt", ""),
             "confidence": 82,
         })
     return items
