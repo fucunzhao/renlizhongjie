@@ -5,6 +5,7 @@ import re
 import secrets
 import sqlite3
 import zipfile
+from datetime import date, datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -343,6 +344,9 @@ def init_db():
                 tags TEXT DEFAULT '',
                 note TEXT DEFAULT '',
                 source TEXT DEFAULT '',
+                status TEXT DEFAULT 'new_lead',
+                next_follow_at TEXT DEFAULT '',
+                last_follow_at TEXT DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS chat_messages (
@@ -379,6 +383,36 @@ def init_db():
                 token TEXT UNIQUE NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS worker_followups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER DEFAULT 0,
+                company_key TEXT DEFAULT '',
+                worker_id INTEGER NOT NULL,
+                type TEXT DEFAULT '沟通',
+                content TEXT NOT NULL,
+                next_follow_at TEXT DEFAULT '',
+                created_by TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS worker_recommendations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER DEFAULT 0,
+                company_key TEXT DEFAULT '',
+                worker_id INTEGER NOT NULL,
+                demand_id INTEGER NOT NULL,
+                status TEXT DEFAULT '已推荐',
+                note TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS service_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER DEFAULT 0,
+                company_key TEXT DEFAULT '',
+                stage TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         ensure_table_columns(conn, "demands", {"account_id": "INTEGER DEFAULT 0"})
@@ -392,6 +426,8 @@ def init_db():
         })
         ensure_worker_columns(conn)
         ensure_knowledge_columns(conn)
+        ensure_relationship_columns(conn)
+        ensure_service_templates(conn)
         demand_count = conn.execute("SELECT COUNT(*) FROM demands").fetchone()[0]
         if demand_count == 0:
             conn.executemany(
@@ -431,7 +467,59 @@ def ensure_worker_columns(conn):
         "expected_role": "TEXT DEFAULT ''",
         "note": "TEXT DEFAULT ''",
         "source": "TEXT DEFAULT ''",
+        "status": "TEXT DEFAULT 'new_lead'",
+        "next_follow_at": "TEXT DEFAULT ''",
+        "last_follow_at": "TEXT DEFAULT ''",
     })
+
+
+def ensure_relationship_columns(conn):
+    ensure_table_columns(conn, "worker_followups", {
+        "account_id": "INTEGER DEFAULT 0",
+        "company_key": "TEXT DEFAULT ''",
+        "worker_id": "INTEGER NOT NULL DEFAULT 0",
+        "type": "TEXT DEFAULT '沟通'",
+        "content": "TEXT DEFAULT ''",
+        "next_follow_at": "TEXT DEFAULT ''",
+        "created_by": "TEXT DEFAULT ''",
+    })
+    ensure_table_columns(conn, "worker_recommendations", {
+        "account_id": "INTEGER DEFAULT 0",
+        "company_key": "TEXT DEFAULT ''",
+        "worker_id": "INTEGER NOT NULL DEFAULT 0",
+        "demand_id": "INTEGER NOT NULL DEFAULT 0",
+        "status": "TEXT DEFAULT '已推荐'",
+        "note": "TEXT DEFAULT ''",
+    })
+    ensure_table_columns(conn, "service_templates", {
+        "account_id": "INTEGER DEFAULT 0",
+        "company_key": "TEXT DEFAULT ''",
+        "stage": "TEXT DEFAULT ''",
+        "title": "TEXT DEFAULT ''",
+        "content": "TEXT DEFAULT ''",
+    })
+
+
+DEFAULT_SERVICE_TEMPLATES = [
+    ("新线索", "首访确认", "您好，我是劳务中介客服。看到您提交了求职信息，想确认您目前是否还在找工作？期望做长白班、两班倒还是周结岗位？"),
+    ("已推荐", "岗位推荐", "给您匹配到一个岗位：{company}{role}，地点{location}，薪资{salary}。您看今天方便确认是否报名面试吗？"),
+    ("已面试", "面试提醒", "面试提醒：请按时到场，携带身份证原件，穿长裤和运动鞋。到厂后有任何问题可以直接联系我们。"),
+    ("已到岗", "到岗回访", "您好，今天到岗是否顺利？工作强度、食宿、班次是否和介绍一致？有问题请及时反馈。"),
+    ("离职", "离职原因回访", "了解到您已经离职，方便说一下主要原因吗？我这边可以根据您的要求重新推荐更合适的岗位。"),
+]
+
+
+def ensure_service_templates(conn):
+    count = conn.execute("SELECT COUNT(*) FROM service_templates WHERE company_key = ''").fetchone()[0]
+    if count:
+        return
+    conn.executemany(
+        """
+        INSERT INTO service_templates (account_id, company_key, stage, title, content)
+        VALUES (0, '', ?, ?, ?)
+        """,
+        DEFAULT_SERVICE_TEMPLATES,
+    )
 
 
 def ensure_knowledge_columns(conn):
@@ -484,7 +572,48 @@ def row_to_worker(row):
         "score": row["score"],
         "note": row["note"],
         "source": row["source"],
+        "status": row["status"] or "new_lead",
+        "nextFollowAt": row["next_follow_at"] or "",
+        "lastFollowAt": row["last_follow_at"] or "",
+        "createdAt": row["created_at"],
         "tags": [item.strip() for item in (row["tags"] or "").replace("，", ",").split(",") if item.strip()],
+    }
+
+
+def row_to_followup(row):
+    return {
+        "id": row["id"],
+        "accountId": row["account_id"],
+        "companyKey": row["company_key"],
+        "workerId": row["worker_id"],
+        "type": row["type"],
+        "content": row["content"],
+        "nextFollowAt": row["next_follow_at"] or "",
+        "createdBy": row["created_by"] or "",
+        "createdAt": row["created_at"],
+    }
+
+
+def row_to_recommendation(row):
+    return {
+        "id": row["id"],
+        "accountId": row["account_id"],
+        "companyKey": row["company_key"],
+        "workerId": row["worker_id"],
+        "demandId": row["demand_id"],
+        "status": row["status"],
+        "note": row["note"] or "",
+        "createdAt": row["created_at"],
+    }
+
+
+def row_to_template(row):
+    return {
+        "id": row["id"],
+        "stage": row["stage"],
+        "title": row["title"],
+        "content": row["content"],
+        "companyKey": row["company_key"],
     }
 
 
@@ -567,12 +696,14 @@ def demand_knowledge(row):
 def worker_knowledge(row):
     worker = row_to_worker(row)
     tags = worker["tags"] + [worker["location"], worker["period"], worker["expectedRole"], worker["source"]]
+    if worker.get("status"):
+        tags.append(worker["status"])
     tags = [item for item in tags if item]
     summary = (
         f"{worker['name']}，{worker.get('gender') or '性别未填'}，{worker.get('age') or '年龄未填'}岁，"
         f"电话{worker.get('phone') or '未填'}，当前地区{worker['location']}，{worker['available']}，"
         f"期望周期{worker['period']}，期望岗位{worker['expectedRole'] or '未填'}，期望薪资{worker['salary'] or '未填'}。"
-        f"备注：{worker['note'] or '无'}"
+        f"当前状态：{worker.get('status') or 'new_lead'}。备注：{worker['note'] or '无'}"
     )
     return {
         "category": "求职者画像",
@@ -800,6 +931,13 @@ def public_demo_payload():
             }
         ],
         "knowledge": knowledge,
+        "followups": [],
+        "recommendations": [],
+        "serviceTemplates": [
+            {"id": -1, "stage": "新线索", "title": "首访确认", "content": "您好，想确认您现在是否还在找工作？"},
+            {"id": -2, "stage": "已到岗", "title": "到岗回访", "content": "今天到岗是否顺利？食宿和岗位情况是否一致？"},
+        ],
+        "todos": [],
         "insights": build_insights(PUBLIC_DEMO_DEMANDS, PUBLIC_DEMO_WORKERS),
     }
 
@@ -1321,8 +1459,8 @@ def _do_insert_worker(conn, body, account_id, company_key):
     cursor = conn.execute(
         """
         INSERT INTO workers
-        (account_id, company_key, name, phone, gender, age, location, available, period, expected_role, salary, score, tags, note, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (account_id, company_key, name, phone, gender, age, location, available, period, expected_role, salary, score, tags, note, source, status, next_follow_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             int(account_id or 0),
@@ -1340,6 +1478,8 @@ def _do_insert_worker(conn, body, account_id, company_key):
             str(tags),
             body.get("note", "").strip(),
             body.get("source", "业务员录入").strip(),
+            body.get("status", "new_lead").strip() or "new_lead",
+            body.get("nextFollowAt", body.get("next_follow_at", "")).strip(),
         ),
     )
     return cursor.lastrowid
@@ -1352,6 +1492,156 @@ def insert_worker(conn, body, account=None):
         account_id=int(account["id"]),
         company_key=account.get("companyKey", ""),
     )
+
+
+def require_worker(conn, worker_id, account):
+    require_login(account)
+    row = conn.execute(
+        "SELECT * FROM workers WHERE id = ? AND company_key = ?",
+        (int(worker_id or 0), account["companyKey"]),
+    ).fetchone()
+    if not row:
+        raise ValueError("求职者不存在或无权操作")
+    return row
+
+
+def update_worker_status(conn, body, account):
+    row = require_worker(conn, body.get("id"), account)
+    status = (body.get("status") or row["status"] or "new_lead").strip()
+    next_follow_at = (body.get("nextFollowAt") or body.get("next_follow_at") or row["next_follow_at"] or "").strip()
+    note = (body.get("note") or "").strip()
+    conn.execute(
+        """
+        UPDATE workers
+        SET status = ?, next_follow_at = ?, last_follow_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND company_key = ?
+        """,
+        (status, next_follow_at, row["id"], account["companyKey"]),
+    )
+    if note:
+        add_followup(conn, {
+            "workerId": row["id"],
+            "type": "状态流转",
+            "content": note,
+            "nextFollowAt": next_follow_at,
+        }, account)
+    return row["id"]
+
+
+def add_followup(conn, body, account):
+    row = require_worker(conn, body.get("workerId"), account)
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise ValueError("跟进内容不能为空")
+    next_follow_at = (body.get("nextFollowAt") or body.get("next_follow_at") or "").strip()
+    follow_type = (body.get("type") or "沟通").strip()
+    cursor = conn.execute(
+        """
+        INSERT INTO worker_followups
+        (account_id, company_key, worker_id, type, content, next_follow_at, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (int(account["id"]), account["companyKey"], row["id"], follow_type, content, next_follow_at, account.get("name", "")),
+    )
+    updates = ["last_follow_at = CURRENT_TIMESTAMP"]
+    values = []
+    if next_follow_at:
+        updates.append("next_follow_at = ?")
+        values.append(next_follow_at)
+    if body.get("status"):
+        updates.append("status = ?")
+        values.append(body.get("status"))
+    values.extend([row["id"], account["companyKey"]])
+    conn.execute(
+        f"UPDATE workers SET {', '.join(updates)} WHERE id = ? AND company_key = ?",
+        values,
+    )
+    return cursor.lastrowid
+
+
+def add_recommendation(conn, body, account):
+    worker = require_worker(conn, body.get("workerId"), account)
+    demand_id = int(body.get("demandId") or 0)
+    demand = conn.execute(
+        "SELECT * FROM demands WHERE id = ? AND company_key = ?",
+        (demand_id, account["companyKey"]),
+    ).fetchone()
+    if not demand:
+        raise ValueError("岗位需求不存在或无权操作")
+    status = (body.get("status") or "已推荐").strip()
+    note = (body.get("note") or "").strip()
+    cursor = conn.execute(
+        """
+        INSERT INTO worker_recommendations
+        (account_id, company_key, worker_id, demand_id, status, note)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (int(account["id"]), account["companyKey"], worker["id"], demand_id, status, note),
+    )
+    mapped_status = {
+        "已推荐": "recommended",
+        "已面试": "interviewed",
+        "已到岗": "arrived",
+        "在职": "employed",
+        "离职": "left",
+    }.get(status, "")
+    if mapped_status:
+        conn.execute(
+            "UPDATE workers SET status = ?, last_follow_at = CURRENT_TIMESTAMP WHERE id = ? AND company_key = ?",
+            (mapped_status, worker["id"], account["companyKey"]),
+        )
+    add_followup(conn, {
+        "workerId": worker["id"],
+        "type": "岗位推荐",
+        "content": f"推荐到 {demand['company']} {demand['role']}，结果：{status}。{note}".strip(),
+        "status": mapped_status or worker["status"],
+    }, account)
+    return cursor.lastrowid
+
+
+def build_auto_todos(demands, workers, followups):
+    today = date.today().isoformat()
+    todos = []
+    status_text = {
+        "new_lead": "待首访",
+        "contacted": "待确认意向",
+        "recommended": "待跟进面试",
+        "interviewed": "待确认结果",
+        "arrived": "到岗回访",
+        "employed": "在职维护",
+        "left": "离职回访",
+        "reusable": "可再推荐",
+    }
+    for worker in workers:
+        if worker.get("status") in ("new_lead", "left", "reusable"):
+            todos.append({
+                "type": "求职者跟进",
+                "title": f"{worker['name']}｜{status_text.get(worker.get('status'), '待跟进')}",
+                "note": f"{worker.get('location') or '地区待确认'}，{worker.get('available') or '到岗时间待确认'}",
+                "workerId": worker["id"],
+                "priority": "high" if worker.get("status") == "new_lead" else "normal",
+            })
+        if worker.get("nextFollowAt") and worker["nextFollowAt"] <= today:
+            todos.append({
+                "type": "到期回访",
+                "title": f"{worker['name']}｜计划回访",
+                "note": f"计划时间：{worker['nextFollowAt']}",
+                "workerId": worker["id"],
+                "priority": "high",
+            })
+    urgent_demands = sorted(
+        [item for item in demands if max(int(item["headcount"]) - int(item.get("signed") or 0), 0) > 0],
+        key=lambda item: item["start"],
+    )[:5]
+    for demand in urgent_demands:
+        todos.append({
+            "type": "岗位补员",
+            "title": f"{demand['company']} {demand['role']}",
+            "note": f"缺口 {max(int(demand['headcount']) - int(demand.get('signed') or 0), 0)} 人，建议从可再推荐/新线索中筛选",
+            "demandId": demand["id"],
+            "priority": "normal",
+        })
+    return todos[:12]
 
 
 def get_payload(account=None):
@@ -1391,12 +1681,41 @@ def get_payload(account=None):
                 knowledge_params,
             )
         ]
+        followups = [
+            row_to_followup(row)
+            for row in conn.execute(
+                "SELECT * FROM worker_followups WHERE company_key = ? ORDER BY created_at DESC, id DESC",
+                (account["companyKey"],),
+            )
+        ]
+        recommendations = [
+            row_to_recommendation(row)
+            for row in conn.execute(
+                "SELECT * FROM worker_recommendations WHERE company_key = ? ORDER BY created_at DESC, id DESC",
+                (account["companyKey"],),
+            )
+        ]
+        service_templates = [
+            row_to_template(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM service_templates
+                WHERE company_key = '' OR company_key = ?
+                ORDER BY company_key DESC, id
+                """,
+                (account["companyKey"],),
+            )
+        ]
     return {
         "account": account,
         "demands": demands,
         "workers": workers,
         "chat": chat,
         "knowledge": knowledge,
+        "followups": followups,
+        "recommendations": recommendations,
+        "serviceTemplates": service_templates,
+        "todos": build_auto_todos(demands, workers, followups),
         "insights": build_insights(demands, workers),
     }
 
@@ -1410,6 +1729,8 @@ def reset_seed_data(account):
     account_id = int(account["id"])
     with connect() as conn:
         conn.execute("DELETE FROM chat_messages WHERE company_key = ?", (company_key,))
+        conn.execute("DELETE FROM worker_followups WHERE company_key = ?", (company_key,))
+        conn.execute("DELETE FROM worker_recommendations WHERE company_key = ?", (company_key,))
         conn.execute("DELETE FROM workers WHERE company_key = ?", (company_key,))
         conn.execute("DELETE FROM demands WHERE company_key = ?", (company_key,))
         conn.execute("DELETE FROM knowledge_entries WHERE company_key = ?", (company_key,))
@@ -1668,6 +1989,45 @@ class Handler(SimpleHTTPRequestHandler):
                 worker_id = insert_worker(conn, body, account)
                 sync_knowledge_entries(conn, company_key=account["companyKey"])
             self.send_json({"ok": True, "id": worker_id, "data": get_payload(account)})
+            return
+        if parsed.path == "/api/workers/update":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再修改求职者状态"}, status=401)
+                return
+            body = self.read_json()
+            try:
+                with connect() as conn:
+                    update_worker_status(conn, body, account)
+                    sync_knowledge_entries(conn, company_key=account["companyKey"])
+                self.send_json({"ok": True, "data": get_payload(account)})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+        if parsed.path == "/api/followups":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再记录跟进"}, status=401)
+                return
+            body = self.read_json()
+            try:
+                with connect() as conn:
+                    followup_id = add_followup(conn, body, account)
+                    sync_knowledge_entries(conn, company_key=account["companyKey"])
+                self.send_json({"ok": True, "id": followup_id, "data": get_payload(account)})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+        if parsed.path == "/api/recommendations":
+            if not can_write(account):
+                self.send_json({"ok": False, "error": "请先登录账号后再记录推荐"}, status=401)
+                return
+            body = self.read_json()
+            try:
+                with connect() as conn:
+                    recommendation_id = add_recommendation(conn, body, account)
+                    sync_knowledge_entries(conn, company_key=account["companyKey"])
+                self.send_json({"ok": True, "id": recommendation_id, "data": get_payload(account)})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
         if parsed.path == "/api/chat":
             if not account:

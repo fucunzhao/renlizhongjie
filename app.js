@@ -9,6 +9,18 @@ let data = {
 let fuzzyItems = [];
 let fuzzyKind = "demand";
 let account = JSON.parse(localStorage.getItem("labor-account") || "null");
+let activeWorkerId = null;
+
+const WORKER_STATUS = {
+  new_lead: "新线索",
+  contacted: "已沟通",
+  recommended: "已推荐",
+  interviewed: "已面试",
+  arrived: "已到岗",
+  employed: "在职",
+  left: "离职",
+  reusable: "可再推荐"
+};
 
 const els = {
   pageTitle: document.querySelector("#pageTitle"),
@@ -32,6 +44,10 @@ const els = {
   demandTable: document.querySelector("#demandTable"),
   workerSearch: document.querySelector("#workerSearch"),
   workerGrid: document.querySelector("#workerGrid"),
+  workerDetailBody: document.querySelector("#workerDetailBody"),
+  workerStatusForm: document.querySelector("#workerStatusForm"),
+  followupForm: document.querySelector("#followupForm"),
+  recommendationForm: document.querySelector("#recommendationForm"),
   knowledgeSearch: document.querySelector("#knowledgeSearch"),
   knowledgeMetrics: document.querySelector("#knowledgeMetrics"),
   knowledgeList: document.querySelector("#knowledgeList"),
@@ -238,16 +254,22 @@ function renderDashboard() {
     </article>
   `).join("") || `<p class="item-meta">暂无紧急缺口</p>`;
 
-  const tasks = urgent.slice(0, 4).map(item => {
+  const autoTodos = data.todos?.length ? data.todos : urgent.slice(0, 4).map(item => {
     const matches = rankWorkers(item).slice(0, 3);
-    return `
-      <article class="item">
-        <div class="item-top"><strong>${h(item.company)} ${h(item.role)}</strong>${tag("预招募")}</div>
-        <div class="item-meta"><span>建议联系：${matches.map(match => h(match.worker.name)).join("、") || "暂无合适人选"}</span></div>
-      </article>
-    `;
+    return {
+      type: "预招募",
+      title: `${item.company} ${item.role}`,
+      note: `建议联系：${matches.map(match => match.worker.name).join("、") || "暂无合适人选"}`,
+      priority: remaining(item) > 50 ? "high" : "normal"
+    };
   });
-  tasks.push(`<article class="item"><div class="item-top"><strong>本地知识库</strong>${tag(`${activeCompanies} 家企业`)}</div><div class="item-meta"><span>企业规则、岗位排期和推荐解释已进入后台数据库。</span></div></article>`);
+  const tasks = autoTodos.map(item => `
+    <article class="item">
+      <div class="item-top"><strong>${h(item.title)}</strong>${tag(item.type, item.priority === "high" ? "danger" : "warn")}</div>
+      <div class="item-meta"><span>${h(item.note || "")}</span></div>
+    </article>
+  `);
+  tasks.push(`<article class="item"><div class="item-top"><strong>本地知识库</strong>${tag(`${activeCompanies} 家企业`)}</div><div class="item-meta"><span>企业规则、岗位排期、求职者跟进和推荐解释已进入后台数据库。</span></div></article>`);
   els.taskList.innerHTML = tasks.join("");
 }
 
@@ -322,16 +344,20 @@ function renderWorkers() {
     const best = bestDemandFor(worker);
     return `
       <article class="worker-card">
-        <h3>${h(worker.name)}</h3>
+        <div class="item-top"><h3>${h(worker.name)}</h3>${tag(WORKER_STATUS[worker.status] || "新线索", worker.status === "left" ? "danger" : worker.status === "arrived" ? "warn" : "")}</div>
         <p class="item-meta">${h(worker.location)}｜${h(worker.available)}｜${h(worker.period)}</p>
         <p class="item-meta">${[worker.gender, worker.age ? `${worker.age}岁` : "", worker.phone].filter(Boolean).map(h).join("｜") || "基础信息待补充"}</p>
         ${worker.expectedRole ? `<p>期望岗位：${h(worker.expectedRole)}</p>` : ""}
         <p>${h(worker.salary || "薪资待确认")}｜稳定性 ${Number(worker.score) || 0} 分</p>
+        <p class="item-meta">下次跟进：${h(worker.nextFollowAt || "未设置")}｜最近维护：${h(worker.lastFollowAt || "暂无")}</p>
         ${worker.note ? `<p class="item-meta">备注：${h(worker.note)}</p>` : ""}
         <div class="tags">${worker.tags.map(item => tag(item)).join("")}</div>
         <div class="item" style="margin-top:12px">
           <strong>推荐岗位</strong>
           <span class="item-meta">${best ? `${h(best.demand.company)} · ${h(best.demand.role)}（${best.score}分）` : "暂无合适岗位"}</span>
+        </div>
+        <div class="public-actions" style="margin-top:12px">
+          <button class="ghost worker-detail" data-id="${Number(worker.id)}">详情/跟进</button>
         </div>
       </article>
     `;
@@ -469,6 +495,67 @@ function bestDemandFor(worker) {
   return ranked[0];
 }
 
+function workerFollowups(workerId) {
+  return (data.followups || []).filter(item => Number(item.workerId) === Number(workerId));
+}
+
+function workerRecommendations(workerId) {
+  return (data.recommendations || []).filter(item => Number(item.workerId) === Number(workerId));
+}
+
+function demandById(id) {
+  return (data.demands || []).find(item => Number(item.id) === Number(id));
+}
+
+function openWorkerDetail(workerId) {
+  activeWorkerId = Number(workerId);
+  renderWorkerDetail();
+  document.querySelector("#workerDetailModal").showModal();
+}
+
+function renderWorkerDetail() {
+  const worker = data.workers.find(item => Number(item.id) === Number(activeWorkerId));
+  if (!worker || !els.workerDetailBody) return;
+  const best = bestDemandFor(worker);
+  const followups = workerFollowups(worker.id);
+  const recommendations = workerRecommendations(worker.id);
+  const templates = data.serviceTemplates || [];
+  els.workerStatusForm.elements.status.value = worker.status || "new_lead";
+  els.workerStatusForm.elements.nextFollowAt.value = worker.nextFollowAt || "";
+  els.recommendationForm.elements.demandId.innerHTML = (data.demands || []).map(demand =>
+    `<option value="${Number(demand.id)}">${h(demand.company)}｜${h(demand.role)}｜缺 ${remaining(demand)} 人</option>`
+  ).join("");
+  if (best) els.recommendationForm.elements.demandId.value = best.demand.id;
+  els.workerDetailBody.innerHTML = `
+    <section class="detail-grid">
+      <div class="knowledge-block">
+        <strong>完整画像</strong>
+        <p>${h(worker.name)}｜${h(worker.gender || "性别未填")}｜${h(worker.age || "年龄未填")}岁｜${h(worker.phone || "电话未填")}</p>
+        <p>${h(worker.location)}｜${h(worker.available)}｜${h(worker.period)}｜${h(worker.salary || "薪资待确认")}</p>
+        <p>期望岗位：${h(worker.expectedRole || "未填写")}｜稳定性 ${Number(worker.score) || 0} 分</p>
+        <div class="tags">${(worker.tags || []).map(item => tag(item)).join("")}</div>
+      </div>
+      <div class="knowledge-block">
+        <strong>推荐历史</strong>
+        ${recommendations.length ? recommendations.map(item => {
+          const demand = demandById(item.demandId);
+          return `<p>${h(item.createdAt)}｜${h(demand ? `${demand.company} ${demand.role}` : "岗位已删除")}｜${h(item.status)}<br><span class="item-meta">${h(item.note || "")}</span></p>`;
+        }).join("") : `<p class="item-meta">暂无推荐记录</p>`}
+      </div>
+      <div class="knowledge-block">
+        <strong>跟进记录</strong>
+        ${followups.length ? followups.map(item => `
+          <p>${h(item.createdAt)}｜${h(item.type)}｜${h(item.createdBy || "系统")}<br>${h(item.content)}${item.nextFollowAt ? `<br><span class="item-meta">下次跟进：${h(item.nextFollowAt)}</span>` : ""}</p>
+        `).join("") : `<p class="item-meta">暂无跟进记录</p>`}
+      </div>
+      <div class="knowledge-block">
+        <strong>自动客服话术库</strong>
+        ${templates.map(item => `<p><b>${h(item.stage)}｜${h(item.title)}</b><br>${h(item.content)}</p>`).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function escapeHtml(text) {
   return String(text ?? "").replace(/[&<>"']/g, char => ({
     "&": "&amp;",
@@ -563,6 +650,8 @@ function formDataToWorker(formData) {
     score: Number(formData.get("score")),
     tags: formData.get("tags").split(/[,，]/).map(item => item.trim()).filter(Boolean),
     note: formData.get("note")?.trim() || "",
+    status: formData.get("status") || "new_lead",
+    nextFollowAt: formData.get("nextFollowAt") || "",
     source: "业务员录入"
   };
 }
@@ -619,6 +708,66 @@ els.typeFilter.addEventListener("change", renderCalendar);
 els.demandSearch.addEventListener("input", renderDemandTable);
 els.workerSearch.addEventListener("input", renderWorkers);
 els.knowledgeSearch.addEventListener("input", renderKnowledgeBase);
+
+els.workerGrid.addEventListener("click", event => {
+  const button = event.target.closest(".worker-detail");
+  if (button) openWorkerDetail(button.dataset.id);
+});
+
+els.workerStatusForm?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const payload = await api("/api/workers/update", {
+    method: "POST",
+    body: JSON.stringify({
+      id: activeWorkerId,
+      status: formData.get("status"),
+      nextFollowAt: formData.get("nextFollowAt"),
+      note: formData.get("note")
+    })
+  });
+  data = payload.data;
+  event.currentTarget.elements.note.value = "";
+  renderAll();
+  renderWorkerDetail();
+});
+
+els.followupForm?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const payload = await api("/api/followups", {
+    method: "POST",
+    body: JSON.stringify({
+      workerId: activeWorkerId,
+      type: formData.get("type"),
+      content: formData.get("content"),
+      nextFollowAt: formData.get("nextFollowAt"),
+      status: formData.get("status")
+    })
+  });
+  data = payload.data;
+  event.currentTarget.reset();
+  renderAll();
+  renderWorkerDetail();
+});
+
+els.recommendationForm?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const payload = await api("/api/recommendations", {
+    method: "POST",
+    body: JSON.stringify({
+      workerId: activeWorkerId,
+      demandId: formData.get("demandId"),
+      status: formData.get("status"),
+      note: formData.get("note")
+    })
+  });
+  data = payload.data;
+  event.currentTarget.elements.note.value = "";
+  renderAll();
+  renderWorkerDetail();
+});
 
 document.querySelector("#parseFuzzy").addEventListener("click", async () => {
   const text = els.fuzzyText.value.trim();
